@@ -29,7 +29,7 @@ CHAT
 CHAT/
 
 # Data (too large for git)
-data/
+/data/
 *.mp4
 *.wav
 
