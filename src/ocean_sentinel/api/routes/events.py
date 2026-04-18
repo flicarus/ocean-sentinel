@@ -1,4 +1,13 @@
+import io
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")  # no GUI needed — render to buffer only
+import matplotlib.pyplot as plt
+import numpy as np
+
 from fastapi import APIRouter, Request, Query, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 from ocean_sentinel.api.schemas import (
     DetectionEventSchema, DetectionEventListResponse,
@@ -93,3 +102,24 @@ async def submit_feedback(event_id: str, req: FeedbackRequest, request: Request)
 @router.get("/{event_id}/feedback")
 async def list_event_feedback(event_id: str, request: Request):
     return await request.app.state.store.list_feedback(event_id=event_id)
+
+
+@router.get("/{event_id}/spectrogram")
+async def event_spectrogram(event_id: str):
+    npy_path = Path(f"data/spectrograms/{event_id}.npy")
+    if not npy_path.exists():
+        raise HTTPException(status_code=404, detail="Spectrogram not found for this event")
+
+    data = np.load(npy_path)
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.imshow(data, aspect="auto", origin="lower", cmap="magma")
+    ax.axis("off")
+    fig.tight_layout(pad=0)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0)
+    plt.close(fig)
+    buf.seek(0)
+
+    return Response(content=buf.getvalue(), media_type="image/png")

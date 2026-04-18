@@ -123,4 +123,7 @@ class TrainingLogger(Protocol):
         features: AcousticFeatures,
         context_text: str,
         gemma_verdict: dict[str, Any],
+        source_id: str = "unknown",
+        ground_truth_label: str | None = None,
+        ground_truth_source: str | None = None,
     ) -> None: ...
