@@ -8,7 +8,8 @@ from ocean_sentinel.adapters.copernicus import CopernicusAdapter
 from ocean_sentinel.adapters.chromadb_store import ChromaDBAcousticMemory
 from ocean_sentinel.adapters.persistence import SQLiteEventStore
 from ocean_sentinel.adapters.training_logger import JSONLTrainingLogger
-from ocean_sentinel.api.routes import health, events, alerts, dashboard, pipeline, logs
+from ocean_sentinel.adapters.supabase_training_logger import SupabaseTrainingLogger
+from ocean_sentinel.api.routes import health, events, alerts, dashboard, pipeline, logs, memory
 from ocean_sentinel.api.middleware import RequestIDMiddleware, ErrorHandlerMiddleware
 from ocean_sentinel.logging import configure_logging
 
@@ -22,7 +23,14 @@ async def lifespan(app: FastAPI):
     await store.init()
 
     memory = ChromaDBAcousticMemory(persist_dir="data/chromadb")
-    training_logger = JSONLTrainingLogger(output_dir="data/training")
+
+    if settings.supabase_url and settings.supabase_service_role_key:
+        training_logger = SupabaseTrainingLogger(
+            url=settings.supabase_url,
+            service_role_key=settings.supabase_service_role_key,
+        )
+    else:
+        training_logger = JSONLTrainingLogger(output_dir="data/training")
 
     app.state.settings = settings
     app.state.gfw = GFWAdapter(settings)
@@ -60,6 +68,7 @@ def create_app() -> FastAPI:
     app.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
     app.include_router(pipeline.router, prefix="/pipeline", tags=["pipeline"])
     app.include_router(logs.router, prefix="/logs", tags=["logs"])
+    app.include_router(memory.router, prefix="/memory", tags=["memory"])
 
     return app
 

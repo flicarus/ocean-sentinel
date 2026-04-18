@@ -1,4 +1,14 @@
+import io
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")  # no GUI needed — render to buffer only
+import matplotlib.pyplot as plt
+import numpy as np
+
 from fastapi import APIRouter, Request, Query, HTTPException
+from fastapi.responses import Response
+from pydantic import BaseModel
 from ocean_sentinel.api.schemas import (
     DetectionEventSchema, DetectionEventListResponse,
     GeoPointSchema, AISGapSchema, OceanConditionsSchema,
@@ -66,3 +76,50 @@ async def get_event(event_id: str, request: Request):
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
     return _to_schema(event)
+
+
+class FeedbackRequest(BaseModel):
+    correct: bool
+    corrected_threat_level: str | None = None
+
+
+@router.post("/{event_id}/feedback")
+async def submit_feedback(event_id: str, req: FeedbackRequest, request: Request):
+    if req.corrected_threat_level is not None:
+        try:
+            ThreatLevel(req.corrected_threat_level)
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid threat level: {req.corrected_threat_level}. "
+                       f"Must be one of {[t.value for t in ThreatLevel]}",
+            )
+    store = request.app.state.store
+    fb_id = await store.save_feedback(event_id, req.correct, req.corrected_threat_level)
+    return {"id": fb_id, "event_id": event_id, "correct": req.correct}
+
+
+@router.get("/{event_id}/feedback")
+async def list_event_feedback(event_id: str, request: Request):
+    return await request.app.state.store.list_feedback(event_id=event_id)
+
+
+@router.get("/{event_id}/spectrogram")
+async def event_spectrogram(event_id: str):
+    npy_path = Path(f"data/spectrograms/{event_id}.npy")
+    if not npy_path.exists():
+        raise HTTPException(status_code=404, detail="Spectrogram not found for this event")
+
+    data = np.load(npy_path)
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.imshow(data, aspect="auto", origin="lower", cmap="magma")
+    ax.axis("off")
+    fig.tight_layout(pad=0)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0)
+    plt.close(fig)
+    buf.seek(0)
+
+    return Response(content=buf.getvalue(), media_type="image/png")

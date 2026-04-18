@@ -35,3 +35,8 @@ class Settings(BaseSettings):
 
     environment: str = "development"
     log_json: bool = False
+
+    onc_token: str | None = None
+
+    supabase_url: str | None = None
+    supabase_service_role_key: str | None = None
