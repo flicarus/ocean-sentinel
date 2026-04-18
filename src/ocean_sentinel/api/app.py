@@ -8,7 +8,7 @@ from ocean_sentinel.adapters.copernicus import CopernicusAdapter
 from ocean_sentinel.adapters.chromadb_store import ChromaDBAcousticMemory
 from ocean_sentinel.adapters.persistence import SQLiteEventStore
 from ocean_sentinel.adapters.training_logger import JSONLTrainingLogger
-from ocean_sentinel.api.routes import health, events, alerts, dashboard, pipeline, logs
+from ocean_sentinel.api.routes import health, events, alerts, dashboard, pipeline, logs, memory
 from ocean_sentinel.api.middleware import RequestIDMiddleware, ErrorHandlerMiddleware
 from ocean_sentinel.logging import configure_logging
 
@@ -60,6 +60,7 @@ def create_app() -> FastAPI:
     app.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
     app.include_router(pipeline.router, prefix="/pipeline", tags=["pipeline"])
     app.include_router(logs.router, prefix="/logs", tags=["logs"])
+    app.include_router(memory.router, prefix="/memory", tags=["memory"])
 
     return app
 

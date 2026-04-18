@@ -35,3 +35,5 @@ class Settings(BaseSettings):
 
     environment: str = "development"
     log_json: bool = False
+
+    onc_token: str | None = None

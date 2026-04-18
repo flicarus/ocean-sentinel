@@ -1,4 +1,5 @@
 import json
+import uuid
 import aiosqlite
 from datetime import datetime, timezone
 from typing import Any
@@ -34,6 +35,15 @@ CREATE TABLE IF NOT EXISTS alerts (
     failure_reason TEXT,
     FOREIGN KEY (event_id) REFERENCES detection_events(id)
 );
+
+CREATE TABLE IF NOT EXISTS feedback (
+    id                     TEXT PRIMARY KEY,
+    event_id               TEXT NOT NULL,
+    correct                BOOLEAN NOT NULL,
+    corrected_threat_level TEXT,
+    created_at             TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_event ON feedback(event_id);
 """
 
 # ── serialisation helpers ──────────────────────────────────────────────────
@@ -232,3 +242,31 @@ class SQLiteEventStore:
             )
         rows = await cursor.fetchall()
         return [_row_to_alert(r) for r in rows]
+
+    async def save_feedback(
+        self, event_id: str, correct: bool, corrected_threat_level: str | None
+    ) -> str:
+        fb_id = str(uuid.uuid4())
+        created_at = datetime.utcnow().isoformat()
+        await self._db.execute(
+            """
+            INSERT INTO feedback (id, event_id, correct, corrected_threat_level, created_at)
+            VALUES (?,?,?,?,?)
+            """,
+            (fb_id, event_id, correct, corrected_threat_level, created_at),
+        )
+        await self._db.commit()
+        return fb_id
+
+    async def list_feedback(self, event_id: str | None = None) -> list[dict]:
+        if event_id:
+            cursor = await self._db.execute(
+                "SELECT * FROM feedback WHERE event_id = ? ORDER BY created_at DESC",
+                (event_id,)
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT * FROM feedback ORDER BY created_at DESC"
+            )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]

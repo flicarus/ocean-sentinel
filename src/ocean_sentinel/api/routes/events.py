@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Request, Query, HTTPException
+from pydantic import BaseModel
 from ocean_sentinel.api.schemas import (
     DetectionEventSchema, DetectionEventListResponse,
     GeoPointSchema, AISGapSchema, OceanConditionsSchema,
@@ -66,3 +67,29 @@ async def get_event(event_id: str, request: Request):
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
     return _to_schema(event)
+
+
+class FeedbackRequest(BaseModel):
+    correct: bool
+    corrected_threat_level: str | None = None
+
+
+@router.post("/{event_id}/feedback")
+async def submit_feedback(event_id: str, req: FeedbackRequest, request: Request):
+    if req.corrected_threat_level is not None:
+        try:
+            ThreatLevel(req.corrected_threat_level)
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid threat level: {req.corrected_threat_level}. "
+                       f"Must be one of {[t.value for t in ThreatLevel]}",
+            )
+    store = request.app.state.store
+    fb_id = await store.save_feedback(event_id, req.correct, req.corrected_threat_level)
+    return {"id": fb_id, "event_id": event_id, "correct": req.correct}
+
+
+@router.get("/{event_id}/feedback")
+async def list_event_feedback(event_id: str, request: Request):
+    return await request.app.state.store.list_feedback(event_id=event_id)
