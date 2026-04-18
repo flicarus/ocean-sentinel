@@ -72,7 +72,7 @@ class GemmaAdapter:
         self._google_api_key = settings.google_ai_api_key
         self._ollama_url = settings.ollama_base_url
         self._model = settings.gemma_model
-        self._client = httpx.AsyncClient(timeout=120.0)
+        self._client = httpx.AsyncClient(timeout=300.0)
         self._memory = memory
 
     async def close(self) -> None:

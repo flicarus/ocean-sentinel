@@ -5,7 +5,7 @@ class Settings(BaseSettings):
     Every var is prefixed OS_ (Ocean Sentinel).
     """
 
-    model_config = SettingsConfigDict(env_prefix="OS_", env_file=".env")
+    model_config = SettingsConfigDict(env_prefix="OS_", env_file=".env", extra="ignore")
 
     mbari_bucket: str = "pacific-sound-16khz"
     mbari_sample_rate: int = 16_000

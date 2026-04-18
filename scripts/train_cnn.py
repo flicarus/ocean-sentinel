@@ -14,19 +14,43 @@ LABEL_MAP = {"NONE": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 
 
 class SpecDataset(Dataset):
-    """Reads one training pair per JSONL line: (.npy spectrogram, threat label)."""
+    """Reads one training pair per JSONL line: (.npy spectrogram, threat label).
 
-    def __init__(self, jsonl_path: str) -> None:
+    `sources` filters by `source_id` in the JSONL row. Entries written before
+    the source_id field existed (the legacy Day-5 Gemma pairs) lack that key
+    and are excluded when a filter is set.
+    """
+
+    def __init__(
+        self,
+        jsonl_path: str,
+        sources: set[str] | None = None,
+        representation_version: str | None = None,
+    ) -> None:
         lines = Path(jsonl_path).read_text().splitlines()
         all_entries = [json.loads(l) for l in lines if l.strip()]
-        # Drop entries where Gemma returned invalid JSON (no valid threat_level).
-        self.entries = [
-            e for e in all_entries
-            if e.get("gemma_verdict", {}).get("threat_level") in LABEL_MAP
-        ]
+
+        def keep(e: dict) -> bool:
+            if e.get("gemma_verdict", {}).get("threat_level") not in LABEL_MAP:
+                return False
+            if sources is not None and e.get("source_id") not in sources:
+                return False
+            if (
+                representation_version is not None
+                and e.get("representation_version") != representation_version
+            ):
+                return False
+            return True
+
+        self.entries = [e for e in all_entries if keep(e)]
         skipped = len(all_entries) - len(self.entries)
         if skipped:
-            print(f"SpecDataset: skipped {skipped} malformed entries")
+            print(f"SpecDataset: skipped {skipped} entries (filter + malformed)")
+        label_dist = {}
+        for e in self.entries:
+            lbl = e["gemma_verdict"]["threat_level"]
+            label_dist[lbl] = label_dist.get(lbl, 0) + 1
+        print(f"SpecDataset: loaded {len(self.entries)} pairs, distribution: {label_dist}")
 
 
     def __len__(self) -> int:
@@ -87,11 +111,61 @@ def evaluate(model, loader, loss_fn, device):
     return total_loss / total, correct / total
 
 
+@torch.no_grad()
+def _confusion_matrix(model, loader, device, n_classes: int = 5) -> np.ndarray:
+    """Build a raw NxN confusion matrix over a dataloader."""
+    model.train(False)
+    cm = np.zeros((n_classes, n_classes), dtype=np.int64)
+    for x, y in loader:
+        x, y = x.to(device), y.to(device)
+        preds = model(x)["vessel"].argmax(dim=1)
+        for t, p in zip(y.tolist(), preds.tolist()):
+            cm[t, p] += 1
+    return cm
+
+
+def _print_confusion(cm: np.ndarray) -> None:
+    inv = {v: k for k, v in LABEL_MAP.items()}
+    labels = [inv[i] for i in range(cm.shape[0])]
+    header = "truth\\pred".ljust(12) + "".join(f"{l:>9s}" for l in labels)
+    print(header)
+    for i, row in enumerate(cm):
+        total = int(row.sum())
+        cells = "".join(f"{c:>9d}" for c in row)
+        acc = (row[i] / total) if total else 0.0
+        print(f"{labels[i]:<12s}{cells}   ({int(row[i])}/{total} = {acc:.1%})")
+
+
 def main() -> None:
+    import argparse
+
     from ocean_sentinel.models.cnn import OceanSentinelCNN
 
-    dataset = SpecDataset("data/training/gemma_labels.jsonl")
-    train_loader, val_loader = make_loaders(dataset, batch_size=16)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--jsonl", default="data/training/gemma_labels.jsonl")
+    ap.add_argument(
+        "--sources",
+        nargs="+",
+        default=["shipsear-groundtruth"],
+        help="JSONL source_id values to include.",
+    )
+    ap.add_argument("--representation", default="abs_db_v1")
+    ap.add_argument("--epochs", type=int, default=30)
+    ap.add_argument("--batch-size", type=int, default=32)
+    ap.add_argument("--ckpt", default="data/models/cnn_v2.pt")
+    args = ap.parse_args()
+
+    dataset = SpecDataset(
+        args.jsonl,
+        sources=set(args.sources) if args.sources else None,
+        representation_version=args.representation,
+    )
+    if len(dataset) < 20:
+        raise SystemExit(
+            f"Dataset too small ({len(dataset)}). Run bootstrap_shipsear.py first."
+        )
+
+    train_loader, val_loader = make_loaders(dataset, batch_size=args.batch_size)
 
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     model = OceanSentinelCNN().to(device)
@@ -99,19 +173,16 @@ def main() -> None:
     loss_fn = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
 
-    # Save on lowest val_loss (not highest val_acc). Loss keeps decreasing
-    # even after acc plateaus/ties, so we capture the most-converged model.
     best_val_loss = float("inf")
     best_val_acc = 0.0
-    ckpt_path = Path("data/models/cnn_v1.pt")
+    ckpt_path = Path(args.ckpt)
     ckpt_path.parent.mkdir(parents=True, exist_ok=True)
 
-    epochs = 20
-    for epoch in range(1, epochs + 1):
+    for epoch in range(1, args.epochs + 1):
         train_loss, train_acc = train_one_epoch(model, train_loader, loss_fn, optimizer, device)
         val_loss, val_acc = evaluate(model, val_loader, loss_fn, device)
         print(
-            f"epoch {epoch:2d}/{epochs}  "
+            f"epoch {epoch:2d}/{args.epochs}  "
             f"train_loss={train_loss:.3f} train_acc={train_acc:.1%}  "
             f"val_loss={val_loss:.3f} val_acc={val_acc:.1%}"
         )
@@ -123,6 +194,12 @@ def main() -> None:
 
     print(f"\nBest val_loss: {best_val_loss:.3f}  (val_acc={best_val_acc:.1%})")
     print(f"Checkpoint: {ckpt_path}")
+
+    # Reload best weights, build confusion matrix on validation set
+    model.load_state_dict(torch.load(ckpt_path, map_location=device))
+    cm = _confusion_matrix(model, val_loader, device)
+    print("\nValidation confusion matrix:")
+    _print_confusion(cm)
 
 
 if __name__ == "__main__":

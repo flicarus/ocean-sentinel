@@ -53,15 +53,20 @@ class AudioAnalyzer:
 
 
     def _make_spectrogram(self, samples: np.ndarray, sr: int) -> np.ndarray:
-        """Raw samples -> mel spectrogram in dB scale."""
+        """Raw samples -> mel spectrogram in absolute dB scale.
+
+        ref=1.0 (not np.max) so engine energy is a consistent physical
+        quantity across clips and environments. With ref=np.max the same
+        engine sounds different depending on what else is in the clip;
+        with ref=1.0 it's an absolute measurement the CNN can generalize on.
+        """
         mel = librosa.feature.melspectrogram(
             y=samples,
             sr=sr,
             n_mels=self._n_mels,
             fmax=self._fmax,
         )
-        # Convert power to db - easier for model to read, matches how humans percieve loudness
-        return librosa.power_to_db(mel, ref=np.max)
+        return librosa.power_to_db(mel, ref=1.0)
 
     def _extract_features(
         self, samples: np.ndarray, sr: int, spectrogram: np.ndarray

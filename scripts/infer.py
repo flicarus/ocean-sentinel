@@ -13,26 +13,34 @@ from ocean_sentinel.models.cnn import OceanSentinelCNN
 LABELS = ["NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL"]
 
 
-def load_model(ckpt_path: str = "data/models/cnn_v1.pt", device: str = "cpu") -> OceanSentinelCNN:
-    """Load a trained checkpoint into an OceanSentinelCNN and set it to eval mode."""
+def load_model(ckpt_path: str = "data/models/cnn_v2.pt", device: str = "cpu") -> OceanSentinelCNN:
+    """Load a trained checkpoint into an OceanSentinelCNN and set to eval mode."""
     model = OceanSentinelCNN()
     state = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(state)
     model.to(device)
-    model.eval()
+    model.train(False)
     return model
+
+
+def normalize(spec: np.ndarray) -> torch.Tensor:
+    """Per-sample z-score. Matches SpecDataset.__getitem__ exactly -- any
+    drift between training and inference normalization will silently poison
+    predictions.
+    """
+    tensor = torch.from_numpy(spec).unsqueeze(0).unsqueeze(0).float()  # (1, 1, F, T)
+    return (tensor - tensor.mean()) / (tensor.std() + 1e-8)
+
 
 @torch.no_grad()
 def predict(model: OceanSentinelCNN, spec_path: str) -> dict:
-    """Run one spectrogram through the CNN, return label + confidences + embedding."""
     spec = np.load(spec_path)
-    tensor = torch.from_numpy(spec).unsqueeze(0).unsqueeze(0).float()  # (1, 1, F, T)
+    tensor = normalize(spec)
 
     out = model(tensor)
     probs = torch.softmax(out["vessel"], dim=1)[0]
     pred_idx = probs.argmax().item()
     embedding = out["embedding"][0]
-
 
     return {
         "label": LABELS[pred_idx],
@@ -40,6 +48,7 @@ def predict(model: OceanSentinelCNN, spec_path: str) -> dict:
         "probabilities": {LABELS[i]: p.item() for i, p in enumerate(probs)},
         "embedding": embedding.tolist(),
     }
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

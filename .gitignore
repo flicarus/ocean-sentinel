@@ -32,6 +32,8 @@ CHAT/
 /data/
 *.mp4
 *.wav
+/ShipsEar.zip
+/shipsear_5s_16k/
 
 # OS / IDE
 .DS_Store
