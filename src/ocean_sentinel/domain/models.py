@@ -31,6 +31,18 @@ class AudioSegment:
 
 
 @dataclass(frozen=True, slots=True)
+class NearbyVessel:
+    """A vessel actively broadcasting AIS near a hydrophone."""
+    vessel_id: str
+    vessel_name: str | None
+    vessel_class: str | None        # "fishing", "cargo", "tanker", "passenger", etc.
+    flag_state: str | None
+    position: GeoPoint
+    distance_km: float
+    length_m: float | None          # vessel length from GFW registry
+
+
+@dataclass(frozen=True, slots=True)
 class AISGapEvent:
     """Vessel that went dark — stopped transmitting AIS."""
     vessel_id: str
