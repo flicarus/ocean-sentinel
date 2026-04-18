@@ -1,0 +1,39 @@
+# Environment
+.env
+.env*
+!.env.example
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+.vite/
+dashboard/node_modules/
+dashboard/dist/
+dashboard-react/
+
+# Private / personal
+downloads-photos/
+CHAT
+CHAT/
+
+# Data (too large for git)
+data/
+*.mp4
+*.wav
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/

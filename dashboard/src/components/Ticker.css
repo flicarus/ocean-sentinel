@@ -1,0 +1,99 @@
+.ticker {
+  position: fixed;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(100% - 2rem);
+  max-width: 1200px;
+  height: 38px;
+  background: rgba(255,255,255,0.06);
+  backdrop-filter: blur(40px) saturate(1.8);
+  -webkit-backdrop-filter: blur(40px) saturate(1.8);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  z-index: 1000;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  box-shadow:
+    0 4px 30px rgba(0,0,0,0.1),
+    inset 0 1px 0 rgba(255,255,255,0.08);
+}
+
+.ticker-label {
+  padding: 0 1rem;
+  color: rgba(255,255,255,0.7);
+  font-weight: 500;
+  white-space: nowrap;
+  border-right: 1px solid rgba(255,255,255,0.08);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 100%;
+  flex-shrink: 0;
+}
+
+.ticker-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.6);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255,255,255,0.3); }
+  50% { opacity: 0.4; box-shadow: 0 0 0 6px rgba(255,255,255,0); }
+}
+
+.ticker-track { overflow: hidden; flex: 1; }
+
+.ticker-scroll {
+  display: flex;
+  animation: scroll 60s linear infinite;
+  gap: 3rem;
+  padding-left: 1.5rem;
+}
+
+@keyframes scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+.ticker-item {
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: rgba(255,255,255,0.45);
+}
+
+.ticker-dim { color: rgba(255,255,255,0.25); }
+
+.threat {
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 0.6rem;
+  font-weight: 600;
+  backdrop-filter: blur(10px);
+}
+
+.threat-high {
+  background: rgba(239,68,68,0.12);
+  color: rgba(248,113,113,0.8);
+  border: 1px solid rgba(239,68,68,0.15);
+}
+
+.threat-medium {
+  background: rgba(245,158,11,0.12);
+  color: rgba(251,191,36,0.8);
+  border: 1px solid rgba(245,158,11,0.15);
+}
+
+.threat-low {
+  background: rgba(16,185,129,0.12);
+  color: rgba(52,211,153,0.8);
+  border: 1px solid rgba(16,185,129,0.15);
+}
