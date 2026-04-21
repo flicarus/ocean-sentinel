@@ -30,6 +30,9 @@ class JSONLTrainingLogger:
         features: AcousticFeatures,
         context_text: str,
         gemma_verdict: dict,
+        source_id: str | None = None,
+        ground_truth_label: str | None = None,
+        ground_truth_source: str | None = None,
     ) -> None:
         entry = {
             "event_id": event_id,
@@ -44,6 +47,9 @@ class JSONLTrainingLogger:
             },
             "context_text": context_text,
             "gemma_verdict": gemma_verdict,
+            "source_id": source_id,
+            "ground_truth_label": ground_truth_label,
+            "ground_truth_source": ground_truth_source,
         }
 
         with open(self._file, "a") as f:
