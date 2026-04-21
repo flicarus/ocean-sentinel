@@ -1,13 +1,13 @@
 """Dry-run the AIS labeling logic WITHOUT fetching any audio.
 
 Use this before running bootstrap_ais_correlated.py to verify:
-  - GFW credentials work
+  - GFW credentials work and the API returns data
   - The chosen hydrophone/date has a sensible label distribution
-  - You're not about to waste 25 min on a broken API call
+  - You're not about to waste 25 min on a broken API response
 
 Expected for Bush Point (Puget Sound ferry corridor) on a weekday:
-  NONE: 50-100, LOW: 80-150, MEDIUM: 30-80, HIGH: 10-30, SKIPPED: 20-60
-If you get 288 NONE, GFW is returning nothing — check your API token.
+  NONE=40-60, MEDIUM=80-120, HIGH=20-40, SKIPPED=40-80
+If you see ERROR for every window, check OS_GFW_API_TOKEN in .env.
 
 Usage:
     PYTHONPATH=src venv/bin/python3 scripts/ais_label_preview.py \\
@@ -19,15 +19,14 @@ Usage:
 
 import argparse
 import asyncio
-from datetime import datetime, timedelta, timezone
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 
 from ocean_sentinel.adapters.gfw import GFWAdapter
 from ocean_sentinel.adapters.orcasound import OrcasoundAdapter
 from ocean_sentinel.config import Settings
-from ocean_sentinel.domain.models import TimeWindow
+from ocean_sentinel.domain.models import GeoPoint, NearbyVessel, TimeWindow
 
-# Reuse the same node map and label logic from the main script
 HYDROPHONE_NODES: dict[str, str] = {
     "bush-point":     "rpi_bush_point",
     "sunset-bay":     "rpi_sunset_bay",
@@ -40,27 +39,64 @@ HYDROPHONE_NODES: dict[str, str] = {
 }
 
 
-async def label_for_window(gfw, location, window, radius_km):
-    nearby = await gfw.get_vessels_in_radius(location, radius_km, window)
+def _severity_rank(vessel: NearbyVessel) -> int:
+    vc = (vessel.vessel_class or "").lower()
+    if vc in ("cargo", "tanker"):
+        return 4
+    if vessel.length_m and vessel.length_m >= 80:
+        return 3
+    if vc == "fishing":
+        return 2
+    if vessel.length_m and vessel.length_m >= 30:
+        return 2
+    if vc == "passenger":
+        return 2
+    return 0
 
-    if not nearby:
-        extended = TimeWindow(
-            start=window.start - timedelta(hours=1),
-            end=window.end,
-        )
-        historical = await gfw.get_vessels_in_radius(location, radius_km, extended)
-        if historical:
-            return None
-        return "NONE"
 
-    closest = nearby[0]
-    if closest.distance_km <= 2.0:
-        if closest.length_m and closest.length_m >= 80:
-            return "HIGH"
+def _label_from_vessels(vessels: list[NearbyVessel]) -> str | None:
+    if not vessels:
+        return None
+
+    worst = max(vessels, key=_severity_rank)
+    vc = (worst.vessel_class or "").lower()
+
+    if vc in ("cargo", "tanker"):
+        return "HIGH"
+    if worst.length_m and worst.length_m >= 80:
+        return "HIGH"
+    if vc == "fishing":
         return "MEDIUM"
-    if closest.distance_km <= radius_km:
-        return "LOW"
-    return None
+    if worst.length_m and 30 <= worst.length_m < 80:
+        return "MEDIUM"
+    if vc == "passenger":
+        return "MEDIUM"
+
+    return None  # SKIP — too ambiguous
+
+
+async def label_for_window(
+    gfw: GFWAdapter,
+    location: GeoPoint,
+    window: TimeWindow,
+    radius_km: float,
+) -> str:
+    """Returns NONE, MEDIUM, HIGH, or SKIPPED."""
+    current = await gfw.get_vessels_in_radius(location, radius_km, window)
+
+    if current:
+        result = _label_from_vessels(current)
+        return result if result is not None else "SKIPPED"
+
+    prior_window = TimeWindow(
+        start=window.start - timedelta(hours=1),
+        end=window.start,
+    )
+    prior = await gfw.get_vessels_in_radius(location, radius_km, prior_window)
+    if prior:
+        return "SKIPPED"  # acoustic tail risk
+
+    return "NONE"
 
 
 async def main(hydrophone_id: str, date: str, radius_km: float, step: int) -> None:
@@ -89,30 +125,29 @@ async def main(hydrophone_id: str, date: str, radius_km: float, step: int) -> No
 
         try:
             label = await label_for_window(gfw, location, window, radius_km)
-            key = label if label is not None else "SKIPPED"
-            counts[key] += 1
+            counts[label] += 1
         except Exception as e:
             counts["ERROR"] += 1
             print(f"  ERROR at offset {offset}: {e}")
 
         if (i + 1) % 50 == 0:
-            print(f"  [{i+1}/{total_windows}] running totals: {dict(counts)}")
+            print(f"  [{i+1}/{total_windows}] {dict(counts)}")
 
     await gfw.close()
 
     print()
     print("═" * 40)
     print(f"Label distribution — {hydrophone_id} / {date}")
-    for label in ["NONE", "LOW", "MEDIUM", "HIGH", "SKIPPED", "ERROR"]:
+    for label in ["NONE", "MEDIUM", "HIGH", "SKIPPED", "ERROR"]:
         n = counts[label]
         bar = "█" * (n // 5)
         print(f"  {label:10s}: {n:4d}  {bar}")
     print("═" * 40)
+    print("Expected Bush Point weekday: NONE=40-60, MEDIUM=80-120, HIGH=20-40, SKIPPED=40-80")
 
-    if counts["NONE"] == total_windows:
+    if counts["ERROR"] == total_windows:
         print()
-        print("⚠  WARNING: all windows returned NONE.")
-        print("   This likely means GFW returned no data — check OS_GFW_API_TOKEN in .env")
+        print("WARNING: all windows errored — check OS_GFW_API_TOKEN in .env")
 
 
 if __name__ == "__main__":

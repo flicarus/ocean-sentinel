@@ -1,16 +1,18 @@
 """Generate AIS-correlated training pairs from Orcasound hydrophones.
 
 For each 60s audio window in a date range:
-  1. Ask GFW: what vessels were within radius_km of the hydrophone?
-  2. Assign a physics-grounded label based on proximity and vessel size.
+  1. Ask GFW (4Wings report): what vessels were in the area this hour?
+  2. Assign a physics-grounded label based on vessel class + size.
   3. Fetch the audio, compute spectrogram + features.
   4. Write a training pair (metadata + .npy file).
 
-Labels are assigned by physics, not AI — a vessel 1km away at time T
-objectively means that recording contains ship noise.
-
-Ambiguous windows (vessel just left, partial overlap) are skipped to
-keep training data clean.
+Label scheme (per Kuba's design):
+  HIGH    = cargo/tanker present, or any vessel >= 80m
+  MEDIUM  = fishing vessel, or vessel 30-79m, or passenger < 80m
+  NONE    = no vessels in current hour AND prior hour
+  SKIP    = everything ambiguous (unknown class/size, acoustic tail)
+  LOW     = intentionally omitted — comes from ShipsEar dataset instead
+  CRITICAL = intentionally omitted — emerges from CNN vs AIS disagreement later
 
 Usage:
     PYTHONPATH=src venv/bin/python3 scripts/bootstrap_ais_correlated.py \\
@@ -32,12 +34,11 @@ from ocean_sentinel.adapters.gfw import GFWAdapter
 from ocean_sentinel.adapters.orcasound import OrcasoundAdapter
 from ocean_sentinel.adapters.training_logger import JSONLTrainingLogger
 from ocean_sentinel.config import Settings
-from ocean_sentinel.domain.models import AcousticFeatures, GeoPoint, TimeWindow
+from ocean_sentinel.domain.models import AcousticFeatures, GeoPoint, NearbyVessel, TimeWindow
 from ocean_sentinel.services.audio_analyzer import AudioAnalyzer
 
 log = structlog.get_logger()
 
-# Maps short CLI names to OrcasoundAdapter node names
 HYDROPHONE_NODES: dict[str, str] = {
     "bush-point":     "rpi_bush_point",
     "sunset-bay":     "rpi_sunset_bay",
@@ -50,16 +51,50 @@ HYDROPHONE_NODES: dict[str, str] = {
 }
 
 
-def _vessel_type_from_gfw(vessel) -> str:
-    """Map GFW vessel class to our taxonomy."""
-    mapping = {
-        "fishing":   "fishing_vessel",
-        "cargo":     "cargo_ship",
-        "tanker":    "tanker",
-        "passenger": "passenger_vessel",
-        "tug":       "tug",
-    }
-    return mapping.get((vessel.vessel_class or "").lower(), "unknown")
+def _severity_rank(vessel: NearbyVessel) -> int:
+    """Higher number = louder/more threatening vessel. Used to find worst-case."""
+    vc = (vessel.vessel_class or "").lower()
+    if vc in ("cargo", "tanker"):
+        return 4
+    if vessel.length_m and vessel.length_m >= 80:
+        return 3
+    if vc == "fishing":
+        return 2
+    if vessel.length_m and vessel.length_m >= 30:
+        return 2
+    if vc == "passenger":
+        return 2
+    return 0  # unknown/small — not safe to label
+
+
+def _label_from_vessels(vessels: list[NearbyVessel]) -> tuple[str, str] | None:
+    """Return (threat_level, vessel_type) from a list of vessels in the bbox,
+    or None if the window should be skipped.
+
+    Does NOT emit LOW (comes from ShipsEar) or CRITICAL (emerges from CNN later).
+    """
+    if not vessels:
+        return None  # caller handles NONE vs SKIP based on prior-hour check
+
+    worst = max(vessels, key=_severity_rank)
+    vc = (worst.vessel_class or "").lower()
+
+    # HIGH — large commercial vessels
+    if vc in ("cargo", "tanker"):
+        return ("HIGH", vc)
+    if worst.length_m and worst.length_m >= 80:
+        return ("HIGH", vc or "unknown")
+
+    # MEDIUM — fishing, mid-sized, or passenger
+    if vc == "fishing":
+        return ("MEDIUM", "fishing_vessel")
+    if worst.length_m and 30 <= worst.length_m < 80:
+        return ("MEDIUM", vc or "unknown")
+    if vc == "passenger":
+        return ("MEDIUM", "passenger_vessel")
+
+    # Everything else: unknown class + unknown/small length — too ambiguous
+    return None  # SKIP
 
 
 async def label_for_window(
@@ -68,36 +103,40 @@ async def label_for_window(
     window: TimeWindow,
     radius_km: float,
 ) -> tuple[str, str] | None:
-    """Return (threat_level, vessel_type) or None if window is ambiguous.
+    """Return (threat_level, vessel_type) or None (skip this window).
 
-    None means skip this window — don't pollute training data with
-    uncertain labels.
+    None is returned when:
+    - Only unknown/small vessels present (can't label cleanly)
+    - Vessels were present in the prior hour (acoustic tail risk)
+    - No vessel class or length available to make a confident decision
     """
-    nearby = await gfw.get_vessels_in_radius(location, radius_km, window)
+    current = await gfw.get_vessels_in_radius(location, radius_km, window)
 
-    if not nearby:
-        # No vessels now — check if one was here recently (last 1h)
-        extended = TimeWindow(
-            start=window.start - timedelta(hours=1),
-            end=window.end,
-        )
-        historical = await gfw.get_vessels_in_radius(location, radius_km, extended)
-        if historical:
-            return None  # vessel just left, acoustic tail may still be present
-        return ("NONE", "none")
+    if current:
+        return _label_from_vessels(current)
 
-    closest = nearby[0]  # already sorted closest-first
+    # No vessels this hour — check prior hour for acoustic tail
+    prior_window = TimeWindow(
+        start=window.start - timedelta(hours=1),
+        end=window.start,
+    )
+    prior = await gfw.get_vessels_in_radius(location, radius_km, prior_window)
+    if prior:
+        return None  # acoustic tail may still be present — skip
 
-    if closest.distance_km <= 2.0:
-        # Very close — classify by size
-        if closest.length_m and closest.length_m >= 80:
-            return ("HIGH", _vessel_type_from_gfw(closest))
-        return ("MEDIUM", _vessel_type_from_gfw(closest))
+    return ("NONE", "none")
 
-    if closest.distance_km <= radius_km:
-        return ("LOW", _vessel_type_from_gfw(closest))
 
-    return None  # shouldn't happen but guard anyway
+def _vessel_type_label(vessel_type: str) -> str:
+    mapping = {
+        "cargo":            "cargo_ship",
+        "tanker":           "tanker",
+        "fishing":          "fishing_vessel",
+        "fishing_vessel":   "fishing_vessel",
+        "passenger":        "passenger_vessel",
+        "passenger_vessel": "passenger_vessel",
+    }
+    return mapping.get(vessel_type.lower(), vessel_type)
 
 
 async def main(
@@ -121,8 +160,7 @@ async def main(
     location = orca.location
 
     counters: dict[str, int] = {
-        "NONE": 0, "LOW": 0, "MEDIUM": 0, "HIGH": 0,
-        "SKIPPED": 0, "FAILED": 0,
+        "NONE": 0, "MEDIUM": 0, "HIGH": 0, "SKIPPED": 0, "FAILED": 0,
     }
 
     total_windows = 86400 // step
@@ -140,31 +178,27 @@ async def main(
         )
 
         if i % 20 == 0:
-            print(f"  [{i}/{total_windows}] {window_start.strftime('%H:%M')} — "
-                  f"NONE={counters['NONE']} LOW={counters['LOW']} "
-                  f"MEDIUM={counters['MEDIUM']} HIGH={counters['HIGH']} "
-                  f"SKIP={counters['SKIPPED']} FAIL={counters['FAILED']}")
+            print(
+                f"  [{i}/{total_windows}] {window_start.strftime('%H:%M')} — "
+                f"NONE={counters['NONE']} MED={counters['MEDIUM']} "
+                f"HIGH={counters['HIGH']} SKIP={counters['SKIPPED']} "
+                f"FAIL={counters['FAILED']}"
+            )
 
         try:
-            # 1. Decide label first — skip audio fetch if ambiguous
             label = await label_for_window(gfw, location, window, radius_km)
             if label is None:
                 counters["SKIPPED"] += 1
                 continue
             threat_level, vessel_type = label
 
-            # 2. Fetch audio from Orcasound
             segment = await orca.fetch_at_offset(base_date, offset, 60)
-
-            # 3. Analyze — spectrogram + features (sync call)
             analyzed, features_dict = analyzer.analyze(segment)
 
-            # 4. Save spectrogram .npy
             event_id = f"ais_{hydrophone_id}_{date}_{offset}"
             spec_path = spec_dir / f"{event_id}.npy"
             np.save(spec_path, analyzed.spectrogram)
 
-            # 5. Write training pair
             await tlog.log(
                 event_id=event_id,
                 spectrogram_path=str(spec_path),
@@ -177,7 +211,7 @@ async def main(
                     "threat_level": threat_level,
                     "confidence": 1.0,
                     "reasoning": "AIS-correlated label — physics, not model prediction",
-                    "vessel_type": vessel_type,
+                    "vessel_type": _vessel_type_label(vessel_type),
                     "recommended_action": "none",
                 },
                 source_id=f"ais-correlated-{hydrophone_id}",
@@ -199,6 +233,8 @@ async def main(
     for k, v in counters.items():
         print(f"  {k:10s}: {v}")
     print("═" * 40)
+    print()
+    print("Expected Bush Point weekday: NONE=40-60, MEDIUM=80-120, HIGH=20-40, SKIPPED=40-80")
 
     await gfw.close()
     await orca.close()
@@ -211,13 +247,10 @@ if __name__ == "__main__":
     ap.add_argument(
         "--hydrophone", required=True,
         choices=list(HYDROPHONE_NODES.keys()),
-        help="Which Orcasound hydrophone to use",
     )
-    ap.add_argument("--date", required=True, help="Date to process (YYYY-MM-DD)")
-    ap.add_argument("--radius-km", type=float, default=10.0,
-                    help="Radius around hydrophone to check for vessels (default 10)")
-    ap.add_argument("--step", type=int, default=300,
-                    help="Seconds between windows (default 300 = 5 min)")
+    ap.add_argument("--date", required=True, help="YYYY-MM-DD")
+    ap.add_argument("--radius-km", type=float, default=10.0)
+    ap.add_argument("--step", type=int, default=300)
     args = ap.parse_args()
 
     asyncio.run(main(args.hydrophone, args.date, args.radius_km, args.step))
