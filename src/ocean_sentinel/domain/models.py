@@ -40,6 +40,8 @@ class NearbyVessel:
     position: GeoPoint
     distance_km: float
     length_m: float | None          # vessel length from GFW registry
+    present_start: datetime | None = None   # entry timestamp from GFW (hourly resolution)
+    present_end: datetime | None = None     # exit timestamp from GFW
 
 
 @dataclass(frozen=True, slots=True)

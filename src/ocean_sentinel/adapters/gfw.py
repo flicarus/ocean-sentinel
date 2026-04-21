@@ -1,6 +1,6 @@
 import httpx
 import structlog
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from ocean_sentinel.domain.models import AISGapEvent, GeoPoint, NearbyVessel, TimeWindow
 from ocean_sentinel.config import Settings
 from ocean_sentinel.exceptions import GFWError
@@ -24,6 +24,7 @@ class GFWAdapter:
             headers={"Authorization": f"Bearer {settings.gfw_api_token}"},
             timeout=30.0
         )
+        self._vessels_cache: dict[str, list[NearbyVessel]] = {}
 
     async def get_ais_gaps(
         self,
@@ -122,68 +123,65 @@ class GFWAdapter:
         time_window: TimeWindow,
     ) -> list[NearbyVessel]:
         """Return all AIS-broadcasting vessels within radius_km of location
-        during the hour enclosing time_window, sorted by distance ascending.
+        on the day of time_window.
 
-        Uses GFW 4Wings Report API (POST /4wings/report) with
-        public-global-presence:latest. Temporal resolution is hourly minimum —
-        the window is rounded to its enclosing hour, which is fine for
-        acoustic labeling (a vessel within 10km stays audible for >1h).
+        Uses GFW 4Wings Report API (POST /4wings/report) with daily resolution —
+        the minimum the API supports. For acoustic labeling this is fine: a
+        vessel within 10km on the same day is audible during any 60s clip.
         """
-        # Round window to enclosing hour — GFW minimum granularity
-        hour_start = time_window.start.replace(minute=0, second=0, microsecond=0)
-        hour_end = hour_start.replace(hour=hour_start.hour + 1) if hour_start.hour < 23 \
-            else hour_start.replace(hour=0) .replace(day=hour_start.day + 1)
+        day = time_window.start.strftime("%Y-%m-%d")
+        next_day = (time_window.start + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        cache_key = f"{location.lat},{location.lon},{radius_km},{day}"
+        if cache_key in self._vessels_cache:
+            return self._vessels_cache[cache_key]
 
         log.info(
             "fetching_nearby_vessels",
             location=f"{location.lat},{location.lon}",
             radius_km=radius_km,
-            hour=hour_start.isoformat(),
+            day=day,
         )
 
-        # Build a bounding box polygon around the hydrophone
         lat_offset = radius_km / 111.0
         lon_offset = radius_km / (111.0 * cos(radians(location.lat)))
-        min_lon = location.lon - lon_offset
-        max_lon = location.lon + lon_offset
-        min_lat = location.lat - lat_offset
-        max_lat = location.lat + lat_offset
-
-        # GeoJSON polygon for the region (clockwise bbox)
-        region_polygon = {
-            "type": "Polygon",
-            "coordinates": [[
-                [min_lon, min_lat],
-                [max_lon, min_lat],
-                [max_lon, max_lat],
-                [min_lon, max_lat],
-                [min_lon, min_lat],
-            ]],
-        }
 
         body = {
-            "datasets": ["public-global-presence:latest"],
-            "date-range": (
-                f"{hour_start.strftime('%Y-%m-%dT%H:%M:%SZ')},"
-                f"{hour_end.strftime('%Y-%m-%dT%H:%M:%SZ')}"
-            ),
-            "region": region_polygon,
-            "group-by": "VESSEL_ID",
-            "temporal-resolution": "HOURLY",
-            "spatial-resolution": "HIGH",
+            "geojson": {
+                "type": "Polygon",
+                "coordinates": [[
+                    [location.lon - lon_offset, location.lat - lat_offset],
+                    [location.lon + lon_offset, location.lat - lat_offset],
+                    [location.lon + lon_offset, location.lat + lat_offset],
+                    [location.lon - lon_offset, location.lat + lat_offset],
+                    [location.lon - lon_offset, location.lat - lat_offset],
+                ]],
+            }
         }
 
+        # Build URL manually to avoid httpx encoding brackets in datasets[0]
+        url = (
+            f"{self.BASE_URL}/4wings/report"
+            f"?datasets[0]=public-global-presence:latest"
+            f"&date-range={day},{next_day}"
+            f"&temporal-resolution=DAILY"
+            f"&spatial-resolution=LOW"
+            f"&group-by=VESSEL_ID"
+            f"&format=JSON"
+        )
+
         try:
-            response = await self.client.post(
-                f"{self.BASE_URL}/4wings/report",
-                json=body,
-            )
+            response = await self.client.post(url, json=body)
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            log.error("gfw_http_error", status=e.response.status_code, detail=str(e))
+            log.error(
+                "gfw_http_error",
+                status=e.response.status_code,
+                body=e.response.text,
+            )
             raise GFWError(
                 code="gfw_http_error",
-                message=f"GFW API returned {e.response.status_code}"
+                message=f"GFW API returned {e.response.status_code}: {e.response.text}"
             ) from e
         except httpx.RequestError as e:
             log.error("gfw_request_error", detail=str(e))
@@ -192,29 +190,54 @@ class GFWAdapter:
                 message=f"GFW API request failed: {e}"
             ) from e
 
-        # 4Wings report returns a list of per-vessel rows
-        rows = response.json() if isinstance(response.json(), list) else \
-            response.json().get("entries", response.json().get("data", []))
+        data = response.json()
+        # GFW wraps vessel rows inside entries[0]["public-global-presence:..."]
+        entries = data.get("entries", []) if isinstance(data, dict) else data
+        rows: list = []
+        for entry in entries:
+            if isinstance(entry, dict):
+                dataset_key = next((k for k in entry if k.startswith("public-")), None)
+                if dataset_key:
+                    rows.extend(entry[dataset_key])
 
         vessels: list[NearbyVessel] = []
+        seen_vessel_ids: set[str] = set()
         for row in rows:
             try:
+                vid = row.get("vesselId") or row.get("mmsi") or ""
+                if vid in seen_vessel_ids:
+                    continue
+                seen_vessel_ids.add(vid)
+                vessel_type = (row.get("vesselType") or row.get("geartype") or "").lower()
+
+                entry_str = row.get("entryTimestamp")
+                exit_str = row.get("exitTimestamp")
+                present_start = (
+                    datetime.fromisoformat(entry_str.replace("Z", "+00:00"))
+                    if entry_str else None
+                )
+                present_end = (
+                    datetime.fromisoformat(exit_str.replace("Z", "+00:00"))
+                    if exit_str else None
+                )
+
                 vessels.append(NearbyVessel(
-                    vessel_id=row.get("vesselId") or row.get("vessel_id", ""),
-                    vessel_name=row.get("vesselName") or row.get("vessel_name"),
-                    vessel_class=row.get("vesselType") or row.get("vessel_type"),
+                    vessel_id=vid,
+                    vessel_name=row.get("shipName"),
+                    vessel_class=vessel_type or None,
                     flag_state=row.get("flag"),
-                    # 4Wings report doesn't give exact position — use hydrophone
-                    # location as a stand-in (vessel is somewhere in the bbox)
                     position=location,
                     distance_km=0.0,
-                    length_m=row.get("lengthM") or row.get("length_m"),
+                    length_m=None,
+                    present_start=present_start,
+                    present_end=present_end,
                 ))
             except (KeyError, ValueError) as e:
                 log.warning("gfw_vessel_parse_error", error=str(e))
                 continue
 
-        log.info("gfw_vessels_found", count=len(vessels), radius_km=radius_km)
+        log.info("gfw_vessels_found", count=len(vessels), day=day)
+        self._vessels_cache[cache_key] = vessels
         return vessels
 
     async def close(self):

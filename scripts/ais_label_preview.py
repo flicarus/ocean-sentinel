@@ -75,6 +75,20 @@ def _label_from_vessels(vessels: list[NearbyVessel]) -> str | None:
     return None  # SKIP — too ambiguous
 
 
+def _vessels_at_time(vessels: list[NearbyVessel], window: TimeWindow) -> list[NearbyVessel]:
+    """Filter to vessels whose presence window overlaps with the given time window."""
+    result = []
+    for v in vessels:
+        if v.present_start is None or v.present_end is None:
+            result.append(v)  # no timestamp info — assume present
+            continue
+        # overlap: vessel was present if it hadn't left before window starts
+        # and hadn't arrived after window ends
+        if v.present_end >= window.start and v.present_start <= window.end:
+            result.append(v)
+    return result
+
+
 async def label_for_window(
     gfw: GFWAdapter,
     location: GeoPoint,
@@ -82,7 +96,8 @@ async def label_for_window(
     radius_km: float,
 ) -> str:
     """Returns NONE, MEDIUM, HIGH, or SKIPPED."""
-    current = await gfw.get_vessels_in_radius(location, radius_km, window)
+    all_day = await gfw.get_vessels_in_radius(location, radius_km, window)
+    current = _vessels_at_time(all_day, window)
 
     if current:
         result = _label_from_vessels(current)
@@ -92,7 +107,8 @@ async def label_for_window(
         start=window.start - timedelta(hours=1),
         end=window.start,
     )
-    prior = await gfw.get_vessels_in_radius(location, radius_km, prior_window)
+    all_prior = await gfw.get_vessels_in_radius(location, radius_km, prior_window)
+    prior = _vessels_at_time(all_prior, prior_window)
     if prior:
         return "SKIPPED"  # acoustic tail risk
 
