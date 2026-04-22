@@ -10,7 +10,7 @@ import torch
 from ocean_sentinel.models.cnn import OceanSentinelCNN
 
 
-LABELS = ["NONE", "LOW", "MEDIUM", "HIGH", "CRITICAL"]
+LABELS = ["not_ship", "ship"]
 
 
 def load_model(ckpt_path: str = "data/models/cnn_v2.pt", device: str = "cpu") -> OceanSentinelCNN:

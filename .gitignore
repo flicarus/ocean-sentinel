@@ -32,8 +32,15 @@ CHAT/
 /data/
 *.mp4
 *.wav
+*.zip
 /ShipsEar.zip
 /shipsear_5s_16k/
+/ais_only.jsonl
+/ais_spectrograms.zip
+/maciej_new_rows.jsonl
+
+# Local MCP config (absolute paths, personal)
+.mcp.json
 
 # OS / IDE
 .DS_Store

@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
     google_ai_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
-    gemma_model: str = "gemma4:26b"
+    gemma_model: str = "gemma4:e4b"
 
     sendgrid_api_key: str | None = None
     sendgrid_from_email: str = ""

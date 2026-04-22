@@ -43,13 +43,13 @@ class Backbone(nn.Module):
 
 
 class VesselHead(nn.Module):
-    """Classifies a shared embedding into 5 threat levels.
+    """Binary classifier: not_ship (0) vs ship (1).
 
     Output: raw logits. Pass directly to nn.CrossEntropyLoss (which applies
     log-softmax internally) or apply softmax yourself to get probabilities.
     """
 
-    NUM_CLASSES = 5  # NONE, LOW, MEDIUM, HIGH, CRITICAL
+    NUM_CLASSES = 2
 
     def __init__(
         self,
