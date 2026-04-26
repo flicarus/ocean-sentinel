@@ -19,6 +19,9 @@ import numpy as np
 import structlog
 
 from ocean_sentinel.adapters.mbari import MBARIAdapter, MONTEREY_CANYON
+from ocean_sentinel.adapters.sanctsound import (
+    SanctSoundAdapter, SANCTSOUND_SOURCE_URL,
+)
 from ocean_sentinel.adapters.watkins import WatkinsAdapter, WATKINS_SOURCE_URL
 from ocean_sentinel.config import Settings
 from ocean_sentinel.domain.models import (
@@ -36,6 +39,7 @@ log = structlog.get_logger()
 JSONL_PATH = Path("data/training/gemma_labels.jsonl")
 SPEC_DIR = Path("data/spectrograms")
 WATKINS_ROOT = Path("data/watkins")
+SANCTSOUND_ROOT = Path("data/sanctsound")
 
 CHUNK_SECONDS = 5
 MBARI_CHUNK_DURATION = 60
@@ -115,6 +119,119 @@ async def collect_mbari(
                 log.info("mbari_progress", done=i + 1, total=n_chunks, **stats)
     finally:
         await adapter.close()
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# SanctSound
+# ---------------------------------------------------------------------------
+
+def collect_sanctsound(
+    analyzer: AudioAnalyzer, writer: TrainingJsonlWriter, spec_dir: Path,
+    stride_seconds: int = 60, max_chunks_per_site: int = 500,
+) -> dict[str, int]:
+    """Walk data/sanctsound/<site>/*.flac and sample 5s chunks at regular
+    stride. A 6h file contains 4320 contiguous 5s chunks — way too many —
+    so we skip `stride_seconds - CHUNK_SECONDS` seconds between each.
+    Default 60s stride yields 360 chunks per 6h file.
+
+    Per-site cap prevents one huge deployment from dominating the dataset.
+    """
+    adapter = SanctSoundAdapter(SANCTSOUND_ROOT)
+    stats: dict[str, int] = {
+        "files_loaded": 0, "chunks_written": 0, "sites": 0,
+    }
+    per_site_written: dict[str, int] = {}
+    for clip in adapter.enumerate():
+        stats["files_loaded"] += 1
+        sr = clip.sample_rate
+        chunk_len = CHUNK_SECONDS * sr
+        stride = stride_seconds * sr
+        if len(clip.samples) < chunk_len:
+            continue
+        taxonomy = Taxonomy(
+            category="ambient",
+            subclass=clip.subclass,
+        )
+        provenance = Provenance(
+            source_id="sanctsound",
+            source_file=str(clip.path.relative_to(SANCTSOUND_ROOT)),
+            source_url=SANCTSOUND_SOURCE_URL,
+            original_label="ambient",
+            license=SanctSoundAdapter.license_name,
+            collected_at=utc_now_iso(),
+        )
+        # Walk strided windows through the long file. Each window is a
+        # CHUNK_SECONDS slice; its start advances by `stride`.
+        written_here = 0
+        n_windows = 1 + (len(clip.samples) - chunk_len) // stride
+        for idx in range(n_windows):
+            remaining_site = max_chunks_per_site - per_site_written.get(clip.site, 0)
+            if remaining_site <= 0:
+                break
+            start = idx * stride
+            end = start + chunk_len
+            if end > len(clip.samples):
+                break
+            event_id = (
+                f"sanctsound_{clip.site}_{clip.path.stem}_{idx}"
+            )
+            if writer.already_written(event_id):
+                continue
+            chunk = clip.samples[start:end]
+            # No real location/time — SanctSound FLACs don't embed them
+            # at adapter level. We log file stem + chunk idx; if you need
+            # accurate capture time, parse the YYYYMMDDTHHMMSSZ in filename.
+            sub_segment = AudioSegment(
+                source_file=f"{provenance.source_file}#chunk={idx}",
+                location=MONTEREY_CANYON,  # placeholder; SanctSound is its
+                                           # own source_id, location isn't
+                                           # used for labeling logic
+                time_window=TimeWindow(
+                    start=datetime.now(timezone.utc),
+                    end=datetime.now(timezone.utc)
+                        + timedelta(seconds=CHUNK_SECONDS),
+                ),
+                sample_rate=sr,
+                samples=chunk.astype(np.float32, copy=False),
+            )
+            try:
+                analyzed, features_dict = analyzer.analyze(sub_segment)
+            except Exception as e:
+                log.warning("analyzer_failed",
+                            event_id=event_id, error=str(e))
+                continue
+            spec_path = spec_dir / f"{event_id}.npy"
+            np.save(spec_path, analyzed.spectrogram)
+            row = TrainingRow(
+                event_id=event_id,
+                timestamp=utc_now_iso(),
+                spectrogram_path=str(spec_path),
+                representation_version=REPRESENTATION_VERSION,
+                label=binary_label_for(taxonomy),
+                taxonomy=taxonomy,
+                provenance=provenance,
+                audio=AudioMeta(
+                    duration_s=float(CHUNK_SECONDS),
+                    sample_rate=sr,
+                    location=None,
+                    capture_time=None,
+                ),
+                features=AcousticFeatures.from_analyzer_dict(features_dict),
+            )
+            writer.write(row)
+            written_here += 1
+            per_site_written[clip.site] = (
+                per_site_written.get(clip.site, 0) + 1
+            )
+        log.info(
+            "sanctsound_file_done",
+            site=clip.site, file=str(clip.path.name),
+            chunks_written=written_here,
+        )
+        stats["chunks_written"] += written_here
+    stats["sites"] = len(per_site_written)
+    stats["per_site"] = per_site_written  # type: ignore[assignment]
     return stats
 
 
@@ -243,11 +360,17 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--sources", nargs="+",
                     default=["mbari", "watkins"],
-                    choices=["mbari", "watkins"])
+                    choices=["mbari", "watkins", "sanctsound"])
     ap.add_argument("--mbari-chunks", type=int, default=100,
                     help="Number of 60s MBARI chunks (~12 clips each).")
     ap.add_argument("--limit", type=int, default=0,
                     help="If >0, cap mbari-chunks to this (pilot mode).")
+    ap.add_argument("--sanctsound-stride", type=int, default=60,
+                    help="Seconds between 5s SanctSound chunks (default 60 "
+                         "→ 360 chunks per 6h file).")
+    ap.add_argument("--sanctsound-max-per-site", type=int, default=500,
+                    help="Cap chunks per SanctSound site to keep dataset "
+                         "balanced (default 500).")
     args = ap.parse_args()
 
     settings = Settings()
@@ -267,6 +390,12 @@ def main() -> None:
         )
     if "watkins" in args.sources:
         results["watkins"] = collect_watkins(analyzer, writer, SPEC_DIR)
+    if "sanctsound" in args.sources:
+        results["sanctsound"] = collect_sanctsound(
+            analyzer, writer, SPEC_DIR,
+            stride_seconds=args.sanctsound_stride,
+            max_chunks_per_site=args.sanctsound_max_per_site,
+        )
 
     print("\n=== not_ship bootstrap summary ===")
     for src, stats in results.items():
