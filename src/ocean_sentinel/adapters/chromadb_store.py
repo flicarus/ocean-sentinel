@@ -16,28 +16,51 @@ from ocean_sentinel.domain.models import (
 log = structlog.get_logger()
 
 
-class ChromaDBAcousticMemory:
-    """AcousticMemory implementation backed by ChromaDB.
+# ChromaDB collection name. Bumped from "spectrograms" (5-dim hand-crafted
+# features) to "acoustic_memory_cnn64" when we switched the RAG key to the
+# CNN's 64-dim shared backbone embedding. The two collections coexist on
+# disk; we never read from the legacy one.
+_COLLECTION_NAME = "acoustic_memory_cnn64"
+_EMBEDDING_DIM = 64
 
-    Stores acoustic feature embeddings alongside classification metadata,
-    enabling RAG retrieval of similar past detections to enrich Gemma's
-    context on future scans.
+
+class ChromaDBAcousticMemory:
+    """AcousticMemory backed by ChromaDB, keyed on the CNN 64-dim embedding.
+
+    Cosine distance — closer = more acoustically similar. Each entry carries
+    enough metadata to rebuild the full AcousticEntry on retrieval.
     """
 
     def __init__(self, persist_dir: str = "data/chromadb") -> None:
         self._client = chromadb.PersistentClient(path=persist_dir)
         self._collection = self._client.get_or_create_collection(
-            name="spectrograms",
+            name=_COLLECTION_NAME,
             metadata={"hnsw:space": "cosine"},
         )
         log.info(
             "acoustic_memory_initialized",
             persist_dir=persist_dir,
+            collection=_COLLECTION_NAME,
             entries=self._collection.count(),
         )
 
     async def store(self, entry: AcousticEntry) -> None:
-        vector = entry.features.to_vector()
+        if entry.embedding is None:
+            log.warning(
+                "acoustic_entry_skipped_no_embedding",
+                event_id=entry.event_id,
+                reason=(
+                    f"{_COLLECTION_NAME} requires {_EMBEDDING_DIM}-dim CNN "
+                    "embeddings; entry has none"
+                ),
+            )
+            return
+
+        if len(entry.embedding) != _EMBEDDING_DIM:
+            raise ValueError(
+                f"Embedding dim mismatch: got {len(entry.embedding)}, "
+                f"expected {_EMBEDDING_DIM}"
+            )
 
         metadata = {
             # Classification verdict
@@ -50,7 +73,8 @@ class ChromaDBAcousticMemory:
             "timestamp": entry.timestamp.isoformat(),
             "lat": entry.location.lat,
             "lon": entry.location.lon,
-            # Raw features — needed to reconstruct AcousticFeatures on retrieval
+            # Hand-crafted features kept as metadata for reconstruction +
+            # debugging — they're cheap and let us inspect entries by feature.
             "engine_band_ratio": entry.features.engine_band_ratio,
             "peak_frequency_hz": entry.features.peak_frequency_hz,
             "spectral_flatness": entry.features.spectral_flatness,
@@ -60,7 +84,7 @@ class ChromaDBAcousticMemory:
 
         self._collection.upsert(
             ids=[entry.event_id],
-            embeddings=[vector],
+            embeddings=[list(entry.embedding)],
             documents=[entry.context_text],
             metadatas=[metadata],
         )
@@ -72,21 +96,45 @@ class ChromaDBAcousticMemory:
             total_entries=self._collection.count(),
         )
 
+    async def query_by_embedding(
+        self, embedding: list[float], n: int = 3,
+    ) -> list[SimilarMatch]:
+        """Cosine-similarity retrieval by CNN backbone embedding."""
+        if len(embedding) != _EMBEDDING_DIM:
+            raise ValueError(
+                f"Embedding dim mismatch: got {len(embedding)}, "
+                f"expected {_EMBEDDING_DIM}"
+            )
+        return await self._query(list(embedding), n)
+
     async def query_similar(
         self, features: AcousticFeatures, n: int = 3,
+    ) -> list[SimilarMatch]:
+        """Legacy 5-dim path. Returns nothing useful in the new collection
+        because all stored vectors are 64-dim. Kept for backward compat.
+        """
+        log.debug(
+            "acoustic_query_similar_called",
+            note=(
+                "5-dim query against 64-dim collection — falling back, "
+                "but caller should prefer query_by_embedding"
+            ),
+        )
+        return []
+
+    async def _query(
+        self, vector: list[float], n: int,
     ) -> list[SimilarMatch]:
         total = self._collection.count()
         if total == 0:
             return []
-
-        vector = features.to_vector()
 
         results = self._collection.query(
             query_embeddings=[vector],
             n_results=min(n, total),
         )
 
-        # ChromaDB returns nested lists — one per query. We only send one query.
+        # ChromaDB returns nested lists — one per query. We send one query.
         ids = results["ids"][0]
         documents = results["documents"][0]
         metadatas = results["metadatas"][0]
@@ -111,6 +159,7 @@ class ChromaDBAcousticMemory:
                 reasoning=meta["reasoning"],
                 vessel_type=meta["vessel_type"] or None,
                 recommended_action=meta["recommended_action"] or None,
+                embedding=None,  # not round-tripped from chroma; only metadata
             )
             matches.append(SimilarMatch(entry=entry, score=distance))
 

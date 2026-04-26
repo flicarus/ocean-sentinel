@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import base64
-import io
 import json
 import uuid
 from datetime import datetime, timezone
 
 import httpx
-import numpy as np
 import structlog
-from matplotlib import pyplot as plt
 
 from ocean_sentinel.config import Settings
 from ocean_sentinel.domain.enums import ThreatLevel
@@ -29,25 +25,61 @@ log = structlog.get_logger()
 
 
 SYSTEM_PROMPT = """\
-You are Ocean Sentinel, a marine surveillance AI. You analyze hydrophone
-spectrograms alongside vessel tracking and ocean data to detect illegal
-fishing and maritime threats.
+You are Ocean Sentinel, a marine surveillance threat assessor.
 
-You will receive:
-1. A mel spectrogram image from an underwater hydrophone
-2. AIS gap events (vessels that stopped transmitting position)
-3. Ocean conditions (currents, temperature)
-4. Acoustic features extracted from the audio
-5. Prior observations — acoustically similar sounds from past scans with
-   their classifications. Use these as calibration: if similar signatures
-   were previously classified, weigh that evidence in your assessment.
+A specialized acoustic CNN has already analyzed the underwater audio and
+decided whether a vessel is present. Your job is to assign a THREAT LEVEL
+by reasoning over the CNN verdict and the corroborating evidence.
 
-Classify the threat level as one of: CRITICAL, HIGH, MEDIUM, LOW, NONE.
-Respond ONLY with valid JSON matching this schema:
+You receive text only (no audio, no images):
+1. CNN verdict — binary ship / not_ship plus a calibrated confidence
+   (Expected Calibration Error ≈ 2%, so a stated 0.90 means real
+   accuracy ≈ 90% — trust this number)
+2. Acoustic features (engine band energy, peak frequency, spectral
+   flatness) — corroborating signal when CNN confidence is borderline
+3. AIS gap events nearby — vessels that stopped transmitting AIS, with
+   `intentional_disabling` and `in_mpa` flags from Global Fishing Watch
+4. Ocean conditions — currents and sea surface temperature
+5. Prior similar detections — acoustically similar past observations
+   retrieved from a CNN-embedding RAG store, with their threat levels.
+   Use these as calibration anchors.
+
+Decision rubric (use the SHORTEST applicable rule):
+
+NONE     CNN says not_ship, OR ship at confidence < 0.5 with no
+         supporting AIS evidence.
+
+LOW      CNN says ship with reasonable confidence, no AIS gap nearby,
+         no MPA involvement. Routine traffic.
+
+MEDIUM   Ship detected + EXACTLY ONE moderate anomaly:
+         - brief AIS gap (< 1h, not intentional, not inside MPA), OR
+         - vessel near (not inside) an MPA, OR
+         - conflicting signals between CNN confidence and acoustic
+           features.
+
+HIGH     Ship detected + ANY ONE of these serious anomalies is sufficient:
+         - AIS gap > 1h, OR
+         - vessel inside an MPA (in_mpa = true), OR
+         - intentional_disabling = true.
+         Even a single one of these qualifies — do not downgrade to MEDIUM.
+         Likely non-compliant fishing; coast guard should be notified.
+
+CRITICAL Ship detected + TWO OR MORE of the HIGH anomalies stacked
+         (e.g. AIS gap > 1h AND in_mpa, or in_mpa AND intentional_disabling,
+         or any other combination of the three). Strong evidence of
+         illegal fishing in a protected area — immediate response.
+
+Weight prior similar detections from RAG context: if acoustically
+similar past observations were classified HIGH, that is calibration
+data, not noise.
+
+Cite the specific evidence that drove your decision in `reasoning`
+(1-2 sentences). Respond ONLY with valid JSON:
 {
     "threat_level": "CRITICAL|HIGH|MEDIUM|LOW|NONE",
     "confidence": 0.0-1.0,
-    "reasoning": "explanation of your classification",
+    "reasoning": "evidence-grounded justification",
     "vessel_type": "trawler|cargo|fishing|recreational|unknown|none",
     "recommended_action": "alert_coast_guard|monitor|log_only|none"
 }
@@ -86,24 +118,39 @@ class GemmaAdapter:
         ais_gaps: list[AISGapEvent],
         ocean: OceanConditions | None,
         features: dict | None = None,
+        cnn_verdict: dict | None = None,
     ) -> ClassificationResult:
         """Send spectrogram + context + RAG history to Gemma, parse verdict,
         then store the result back into acoustic memory."""
 
-        image_b64 = self._spectrogram_to_base64(audio.spectrogram)
-        text_context = self._build_context(audio, ais_gaps, ocean, features)
+        text_context = self._build_context(audio, ais_gaps, ocean, features, cnn_verdict)
 
         # --- RAG retrieval: enrich context with similar past detections ---
         similar_matches: list[SimilarMatch] = []
-        if self._memory is not None and features is not None:
-            acoustic_features = AcousticFeatures.from_analyzer_dict(features)
-            similar_matches = await self._memory.query_similar(acoustic_features, n=3)
+        if self._memory is not None:
+            cnn_embedding = (
+                cnn_verdict.get("embedding") if cnn_verdict else None
+            )
+            if cnn_embedding is not None:
+                similar_matches = await self._memory.query_by_embedding(
+                    cnn_embedding, n=3,
+                )
+                rag_path = "cnn_embedding"
+            elif features is not None:
+                acoustic_features = AcousticFeatures.from_analyzer_dict(features)
+                similar_matches = await self._memory.query_similar(
+                    acoustic_features, n=3,
+                )
+                rag_path = "acoustic_features"
+            else:
+                rag_path = None
 
             if similar_matches:
                 rag_section = self._build_rag_context(similar_matches)
                 text_context = f"{text_context}\n{rag_section}"
                 log.info(
                     "rag_context_injected",
+                    path=rag_path,
                     n_matches=len(similar_matches),
                     closest_score=similar_matches[0].score,
                 )
@@ -111,9 +158,9 @@ class GemmaAdapter:
         # --- Model inference ---
         try:
             if self._google_api_key:
-                raw = await self._call_google_ai(image_b64, text_context)
+                raw = await self._call_google_ai(text_context)
             else:
-                raw = await self._call_ollama(image_b64, text_context)
+                raw = await self._call_ollama(text_context)
         except httpx.HTTPError as e:
             raise ClassificationError(
                 code="model_request_failed",
@@ -131,6 +178,7 @@ class GemmaAdapter:
                 context_text=text_context,
                 result=result,
                 raw=raw,
+                cnn_verdict=cnn_verdict,
             )
 
         return result
@@ -142,8 +190,10 @@ class GemmaAdapter:
         context_text: str,
         result: ClassificationResult,
         raw: dict,
+        cnn_verdict: dict | None = None,
     ) -> None:
         """Persist this classification as a new acoustic memory entry."""
+        embedding = cnn_verdict.get("embedding") if cnn_verdict else None
         entry = AcousticEntry(
             event_id=str(uuid.uuid4()),
             timestamp=datetime.now(timezone.utc),
@@ -155,6 +205,7 @@ class GemmaAdapter:
             reasoning=result.reasoning,
             vessel_type=raw.get("vessel_type"),
             recommended_action=raw.get("recommended_action"),
+            embedding=embedding,
         )
         await self._memory.store(entry)
 
@@ -183,33 +234,13 @@ class GemmaAdapter:
 
         return "\n".join(lines)
 
-    def _spectrogram_to_base64(self, spectrogram: np.ndarray | None) -> str:
-        """Convert numpy spectrogram to base64 PNG for the vision model."""
-        if spectrogram is None:
-            raise ClassificationError(
-                code="missing_spectrogram",
-                message="AudioSegment has no spectrogram - run AudioAnalyzer first",
-            )
-
-        fig, ax = plt.subplots(1, 1, figsize=(10, 4))
-        ax.imshow(spectrogram, aspect="auto", origin="lower", cmap="magma")
-        ax.set_xlabel("Time")
-        ax.set_ylabel("Frequency (mel)")
-        ax.set_title("Mel Spectrogram")
-
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight", dpi=100)
-        plt.close(fig)
-
-        buf.seek(0)
-        return base64.b64encode(buf.read()).decode()
-
     def _build_context(
         self,
         audio: AudioSegment,
         ais_gaps: list[AISGapEvent],
         ocean: OceanConditions | None,
         features: dict | None,
+        cnn_verdict: dict | None = None,
     ) -> str:
         """Build the text part of the prompt."""
         parts = []
@@ -217,6 +248,15 @@ class GemmaAdapter:
         parts.append(f"Hydrophone: {audio.source_file}")
         parts.append(f"Location: {audio.location.lat}°N {audio.location.lon}°W")
         parts.append(f"Time: {audio.time_window.start} to {audio.time_window.end}")
+
+        if cnn_verdict:
+            probs = cnn_verdict.get("probabilities", {})
+            parts.append("\nCNN tier-1 verdict (binary ship classifier):")
+            parts.append(f"  Label: {cnn_verdict['label']}")
+            parts.append(f"  Confidence: {cnn_verdict['confidence']:.1%}")
+            for cls in ("not_ship", "ship"):
+                if cls in probs:
+                    parts.append(f"  P({cls}) = {probs[cls]:.1%}")
 
         if features:
             parts.append("\nAcoustic features:")
@@ -229,11 +269,14 @@ class GemmaAdapter:
         if ais_gaps:
             parts.append(f"\nAIS gaps detected: {len(ais_gaps)} vessels went dark")
             for gap in ais_gaps:
-                parts.append(f"  - {gap.vessel_name or gap.vessel_id}: "
-                           f"dark since {gap.gap_start}, "
-                           f"{gap.gap_duration_hours:.1f}h, "
-                           f"flag: {gap.flag_state or 'unknown'}, "
-                           f"in MPA: {gap.in_mpa}")
+                parts.append(
+                    f"  - {gap.vessel_name or gap.vessel_id}: "
+                    f"dark since {gap.gap_start}, "
+                    f"{gap.gap_duration_hours:.1f}h, "
+                    f"flag: {gap.flag_state or 'unknown'}, "
+                    f"in_mpa: {gap.in_mpa}, "
+                    f"intentional_disabling: {gap.intentional_disabling}"
+                )
         else:
             parts.append("\nNo AIS gaps detected in this area/timeframe.")
 
@@ -244,18 +287,13 @@ class GemmaAdapter:
 
         return "\n".join(parts)
 
-    async def _call_google_ai(self, image_b64: str, text: str) -> dict:
-        """Call Gemma via Google AI Studio API."""
+    async def _call_google_ai(self, text: str) -> dict:
+        """Call Gemma via Google AI Studio API (text-only threat assessor)."""
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self._model}:generateContent"
 
         payload = {
             "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-            "contents": [{
-                "parts": [
-                    {"inline_data": {"mime_type": "image/png", "data": image_b64}},
-                    {"text": text},
-                ],
-            }],
+            "contents": [{"parts": [{"text": text}]}],
             "generation_config": {
                 "response_mime_type": "application/json",
                 "temperature": 0.1,
@@ -275,8 +313,8 @@ class GemmaAdapter:
         log.info("gemma_response", source="google_ai", model=self._model)
         return json.loads(text_out)
 
-    async def _call_ollama(self, image_b64: str, text: str) -> dict:
-        """Call Gemma via local Ollama instance."""
+    async def _call_ollama(self, text: str) -> dict:
+        """Call Gemma via local Ollama instance (text-only threat assessor)."""
         url = f"{self._ollama_url}/api/chat"
 
         payload = {
@@ -285,11 +323,7 @@ class GemmaAdapter:
             "format": "json",
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": text,
-                    "images": [image_b64],
-                },
+                {"role": "user", "content": text},
             ],
             "options": {"temperature": 0.1},
         }

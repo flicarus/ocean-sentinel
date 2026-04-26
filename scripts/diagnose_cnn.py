@@ -25,9 +25,9 @@ from train_cnn import (
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--jsonl", type=Path,
-                    default=Path("data/training/gemma_labels.v3.jsonl"))
+                    default=Path("data/training/gemma_labels.v5.jsonl"))
     ap.add_argument("--ckpt", type=Path,
-                    default=Path("data/models/cnn_v3.pt"))
+                    default=Path("data/models/cnn_v6.pt"))
     ap.add_argument("--sources", nargs="+", default=None,
                     help="Filter by provenance.source_id. Default: all.")
     ap.add_argument("--held-out-sources", nargs="+", default=None,

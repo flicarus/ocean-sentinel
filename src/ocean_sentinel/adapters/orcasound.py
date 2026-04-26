@@ -164,6 +164,7 @@ class OrcasoundAdapter:
             time_window=TimeWindow(start=capture_start, end=capture_end),
             sample_rate=self._target_sample_rate,
             samples=samples,
+            source_id=self.source_id,
         )
 
 

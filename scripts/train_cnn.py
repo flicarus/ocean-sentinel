@@ -515,7 +515,7 @@ def main() -> None:
     from ocean_sentinel.models.cnn import OceanSentinelCNN
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--jsonl", default="data/training/gemma_labels.jsonl")
+    ap.add_argument("--jsonl", default="data/training/gemma_labels.v5.jsonl")
     ap.add_argument(
         "--sources",
         nargs="+",
@@ -525,7 +525,7 @@ def main() -> None:
     ap.add_argument("--representation", default="abs_db_v1")
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch-size", type=int, default=32)
-    ap.add_argument("--ckpt", default="data/models/cnn_v2.pt")
+    ap.add_argument("--ckpt", default="data/models/cnn_v7.pt")
     ap.add_argument("--no-augment", action="store_true",
                     help="Disable SpecAugment on the training split.")
     ap.add_argument("--no-source-norm", action="store_true",
@@ -581,6 +581,7 @@ def main() -> None:
     # Compute source freq-profiles from TRAINING indices only, then install
     # on both datasets so val samples are normalized with the same profiles
     # (no val leakage — profiles never see val entries).
+    profiles: dict[str, np.ndarray] | None = None
     if not args.no_source_norm:
         train_entries = [ds_train.entries[i] for i in train_idx]
         profiles = compute_source_freq_profiles(train_entries)
@@ -652,6 +653,14 @@ def main() -> None:
     cm = _confusion_matrix(model, val_loader, device)
     print("\nValidation confusion matrix:")
     _print_confusion(cm)
+
+    # Persist source freq-profiles next to the checkpoint so the inference
+    # path (CNNClassifier) can reapply them. Without this, train/inference
+    # drift by the per-source spectral tilt we subtracted at training time.
+    if profiles is not None:
+        profiles_path = ckpt_path.with_suffix(".profiles.npz")
+        np.savez(profiles_path, **profiles)
+        print(f"Saved {len(profiles)} source profiles -> {profiles_path}")
 
 
 if __name__ == "__main__":

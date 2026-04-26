@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     correlation_radius_km: float = 50.0
     correlation_time_window_hours: int = 6
 
+    cnn_checkpoint_path: str = "data/models/cnn_v6.pt"
+
     database_url: str = "sqlite+aiosqlite:///data/ocean_sentinel.db"
 
     environment: str = "development"

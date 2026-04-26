@@ -1,4 +1,7 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
+
+import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -12,6 +15,9 @@ from ocean_sentinel.adapters.supabase_training_logger import SupabaseTrainingLog
 from ocean_sentinel.api.routes import health, events, alerts, dashboard, pipeline, logs, memory
 from ocean_sentinel.api.middleware import RequestIDMiddleware, ErrorHandlerMiddleware
 from ocean_sentinel.logging import configure_logging
+from ocean_sentinel.services.cnn_classifier import CNNClassifier
+
+log = structlog.get_logger()
 
 
 @asynccontextmanager
@@ -32,12 +38,20 @@ async def lifespan(app: FastAPI):
     else:
         training_logger = JSONLTrainingLogger(output_dir="data/training")
 
+    cnn_ckpt = Path(settings.cnn_checkpoint_path)
+    if cnn_ckpt.exists():
+        cnn = CNNClassifier(cnn_ckpt)
+    else:
+        log.warning("cnn_checkpoint_missing", path=str(cnn_ckpt))
+        cnn = None
+
     app.state.settings = settings
     app.state.gfw = GFWAdapter(settings)
     app.state.copernicus = CopernicusAdapter(settings)
     app.state.store = store
     app.state.memory = memory
     app.state.training_logger = training_logger
+    app.state.cnn = cnn
 
     yield
 

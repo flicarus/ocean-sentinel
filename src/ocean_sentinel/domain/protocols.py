@@ -94,13 +94,25 @@ class AcousticMemory(Protocol):
     of similar past classifications to improve Gemma's context."""
 
     async def store(self, entry: AcousticEntry) -> None:
-        """Persist a classified acoustic entry with its feature embedding."""
+        """Persist a classified acoustic entry. The store keys on
+        `entry.embedding` (CNN 64-dim) when available."""
+        ...
+
+    async def query_by_embedding(
+        self, embedding: list[float], n: int = 3,
+    ) -> list[SimilarMatch]:
+        """Find the N most acoustically similar past classifications by
+        CNN embedding (64-dim cosine distance). The recommended retrieval
+        path — embeddings carry far richer acoustic content than the
+        5-dim hand-crafted `AcousticFeatures` vector."""
         ...
 
     async def query_similar(
         self, features: AcousticFeatures, n: int = 3,
     ) -> list[SimilarMatch]:
-        """Find the N most acoustically similar past classifications."""
+        """Legacy retrieval by 5-dim hand-crafted features. Kept for
+        callers without a CNN embedding; new code should prefer
+        `query_by_embedding`."""
         ...
 
     async def count(self) -> int:

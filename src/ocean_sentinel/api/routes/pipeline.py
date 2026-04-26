@@ -103,7 +103,7 @@ async def run_scan(req: ScanRequest, request: Request):
         request.app.state.copernicus,
         settings,
     )
-    classifier = ThreatClassifierService(analyzer, gemma)
+    classifier = ThreatClassifierService(analyzer, gemma, cnn=request.app.state.cnn)
 
     dt = datetime.strptime(req.date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
@@ -142,10 +142,22 @@ async def run_scan(req: ScanRequest, request: Request):
             ))
 
             if scanned % req.sample_every == 0:
-                ais_gaps, ocean = await correlation.correlate(analyzed, features)
+                # Lazy correlation: only fetch AIS / ocean if the classifier
+                # escalates to Gemma. CNN fast-path skips this entirely
+                # (saves ~13% of GFW calls on val).
+                correlation_box: dict = {"ais_gaps": [], "ocean": None}
+
+                async def _correlate():
+                    gaps, oc = await correlation.correlate(analyzed, features)
+                    correlation_box["ais_gaps"] = gaps
+                    correlation_box["ocean"] = oc
+                    return gaps, oc
+
                 result = await classifier.classify(
-                    audio=analyzed, ais_gaps=ais_gaps, ocean=ocean,
+                    audio=analyzed, correlator=_correlate,
                 )
+                ais_gaps = correlation_box["ais_gaps"]
+                ocean = correlation_box["ocean"]
                 classified += 1
 
                 classifications.append(ClassificationResult(

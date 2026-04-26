@@ -21,13 +21,19 @@ class TimeWindow:
 
 @dataclass(frozen=True, slots=True)
 class AudioSegment:
-    """Chunk of hydrophone audio — raw samples + optional spectrogram."""
+    """Chunk of hydrophone audio — raw samples + optional spectrogram.
+
+    `source_id` matches the adapter's `source_id` attribute and lets the CNN
+    tier-1 classifier look up a per-source frequency profile when one was
+    cached at training time.
+    """
     source_file: str
     location: GeoPoint
     time_window: TimeWindow
     sample_rate: int
     samples: np.ndarray
     spectrogram: np.ndarray | None = None
+    source_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +136,10 @@ class AcousticEntry:
     This is the unit of knowledge the system accumulates — one entry
     per Gemma classification, linking the acoustic signature to the
     model's verdict and all contextual evidence.
+
+    `embedding` is the 64-dim shared backbone vector from the CNN. When
+    present, it is used as the ChromaDB vector key — far more discriminative
+    than the 5-dim hand-crafted `features` vector for retrieval.
     """
 
     event_id: str
@@ -142,6 +152,7 @@ class AcousticEntry:
     reasoning: str
     vessel_type: str | None
     recommended_action: str | None
+    embedding: list[float] | None = None
 
 
 @dataclass(frozen=True, slots=True)

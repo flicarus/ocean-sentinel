@@ -54,6 +54,7 @@ class MBARIAdapter:
                     ),
                     sample_rate=self._sample_rate,
                     samples=samples,
+                    source_id=self.source_id,
                 )
                 segments.append(segment)
                 log.info(
@@ -115,6 +116,7 @@ class MBARIAdapter:
             time_window=TimeWindow(start=seg_start, end=seg_end),
             sample_rate=self._sample_rate,
             samples=raw,
+            source_id=self.source_id,
         )
 
     async def _download_chunk(self, url: str, seconds: int) -> bytes:
