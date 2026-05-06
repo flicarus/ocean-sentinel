@@ -15,9 +15,13 @@ from ocean_sentinel.adapters.supabase_training_logger import SupabaseTrainingLog
 from ocean_sentinel.api.routes import health, events, alerts, dashboard, pipeline, logs, memory
 from ocean_sentinel.api.middleware import RequestIDMiddleware, ErrorHandlerMiddleware
 from ocean_sentinel.logging import configure_logging
-from ocean_sentinel.services.cnn_classifier import CNNClassifier
+from ocean_sentinel.services.cnn_v7_classifier import CNNV7Classifier
+from ocean_sentinel.decision import ConformalPredictor, DecisionEngine
 
 log = structlog.get_logger()
+
+
+CONFORMAL_PATH = Path("data/calibration/conformal.json")
 
 
 @asynccontextmanager
@@ -40,18 +44,42 @@ async def lifespan(app: FastAPI):
 
     cnn_ckpt = Path(settings.cnn_checkpoint_path)
     if cnn_ckpt.exists():
-        cnn = CNNClassifier(cnn_ckpt)
+        cnn = CNNV7Classifier(cnn_ckpt)
     else:
         log.warning("cnn_checkpoint_missing", path=str(cnn_ckpt))
         cnn = None
 
+    gfw = GFWAdapter(settings)
+
+    if CONFORMAL_PATH.exists():
+        conformal = ConformalPredictor.load(CONFORMAL_PATH)
+        log.info(
+            "conformal_loaded",
+            path=str(CONFORMAL_PATH),
+            threshold=conformal.threshold,
+            alpha=conformal.alpha,
+            n_calibration=conformal.n_calibration,
+        )
+    else:
+        conformal = ConformalPredictor.uncalibrated(
+            model_checkpoint=str(cnn_ckpt),
+        )
+        log.warning(
+            "conformal_uncalibrated",
+            note="run scripts/calibrate_conformal.py to populate "
+                 + str(CONFORMAL_PATH),
+        )
+
+    decision_engine = DecisionEngine(gfw=gfw, conformal=conformal)
+
     app.state.settings = settings
-    app.state.gfw = GFWAdapter(settings)
+    app.state.gfw = gfw
     app.state.copernicus = CopernicusAdapter(settings)
     app.state.store = store
     app.state.memory = memory
     app.state.training_logger = training_logger
     app.state.cnn = cnn
+    app.state.decision_engine = decision_engine
 
     yield
 

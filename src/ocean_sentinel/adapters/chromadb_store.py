@@ -17,15 +17,15 @@ log = structlog.get_logger()
 
 
 # ChromaDB collection name. Bumped from "spectrograms" (5-dim hand-crafted
-# features) to "acoustic_memory_cnn64" when we switched the RAG key to the
-# CNN's 64-dim shared backbone embedding. The two collections coexist on
-# disk; we never read from the legacy one.
-_COLLECTION_NAME = "acoustic_memory_cnn64"
-_EMBEDDING_DIM = 64
+# features) to "acoustic_memory_cnn64" (v6 CNN, 64-dim backbone embedding)
+# to "acoustic_memory_cnn256" (v7 CNN, 256-dim transformer d_model output).
+# All previous collections coexist on disk; we never read from the legacy ones.
+_COLLECTION_NAME = "acoustic_memory_cnn256"
+_EMBEDDING_DIM = 256
 
 
 class ChromaDBAcousticMemory:
-    """AcousticMemory backed by ChromaDB, keyed on the CNN 64-dim embedding.
+    """AcousticMemory backed by ChromaDB, keyed on the CNN 256-dim embedding.
 
     Cosine distance — closer = more acoustically similar. Each entry carries
     enough metadata to rebuild the full AcousticEntry on retrieval.
@@ -111,12 +111,12 @@ class ChromaDBAcousticMemory:
         self, features: AcousticFeatures, n: int = 3,
     ) -> list[SimilarMatch]:
         """Legacy 5-dim path. Returns nothing useful in the new collection
-        because all stored vectors are 64-dim. Kept for backward compat.
+        because all stored vectors are 256-dim. Kept for backward compat.
         """
         log.debug(
             "acoustic_query_similar_called",
             note=(
-                "5-dim query against 64-dim collection — falling back, "
+                "5-dim query against 256-dim collection — falling back, "
                 "but caller should prefer query_by_embedding"
             ),
         )

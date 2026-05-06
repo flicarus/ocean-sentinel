@@ -20,6 +20,7 @@ from ocean_sentinel.domain.models import (
 )
 from ocean_sentinel.domain.protocols import AcousticMemory
 from ocean_sentinel.exceptions import ClassificationError
+from ocean_sentinel.services.agent_tools import Toolbox
 
 log = structlog.get_logger()
 
@@ -44,6 +45,19 @@ You receive text only (no audio, no images):
    retrieved from a CNN-embedding RAG store, with their threat levels.
    Use these as calibration anchors.
 
+You also have access to tools to gather more evidence — call them when
+relevant BEFORE issuing the final verdict:
+  • check_mpa_proximity(lat, lon) — nearest MPA + protection level.
+    ALWAYS call this when CNN says ship and a location is given.
+  • lookup_vessel_registry(mmsi) — vessel name, flag, type, IUU history.
+    ALWAYS call this when an AIS gap event has a vessel_id.
+  • query_recent_detections(lat, lon, radius_km, hours) — pattern of
+    activity near the detection. Call when CNN confidence is borderline
+    or AIS gap evidence is ambiguous.
+
+Skip tools entirely when CNN says not_ship — they add no value on quiet
+chunks.
+
 Decision rubric (use the SHORTEST applicable rule):
 
 NONE     CNN says not_ship, OR ship at confidence < 0.5 with no
@@ -60,22 +74,24 @@ MEDIUM   Ship detected + EXACTLY ONE moderate anomaly:
 
 HIGH     Ship detected + ANY ONE of these serious anomalies is sufficient:
          - AIS gap > 1h, OR
-         - vessel inside an MPA (in_mpa = true), OR
-         - intentional_disabling = true.
+         - vessel inside an MPA (in_mpa = true OR check_mpa_proximity
+           returned inside=true), OR
+         - intentional_disabling = true, OR
+         - vessel registry shows ≥1 prior IUU event.
          Even a single one of these qualifies — do not downgrade to MEDIUM.
          Likely non-compliant fishing; coast guard should be notified.
 
 CRITICAL Ship detected + TWO OR MORE of the HIGH anomalies stacked
-         (e.g. AIS gap > 1h AND in_mpa, or in_mpa AND intentional_disabling,
-         or any other combination of the three). Strong evidence of
-         illegal fishing in a protected area — immediate response.
+         (e.g. AIS gap > 1h AND in_mpa, recidivist vessel inside no-take
+         MPA, persistent_activity AND in_mpa). Strong evidence of illegal
+         fishing in a protected area — immediate response.
 
 Weight prior similar detections from RAG context: if acoustically
 similar past observations were classified HIGH, that is calibration
 data, not noise.
 
 Cite the specific evidence that drove your decision in `reasoning`
-(1-2 sentences). Respond ONLY with valid JSON:
+(1-2 sentences), including any tool results. Respond ONLY with valid JSON:
 {
     "threat_level": "CRITICAL|HIGH|MEDIUM|LOW|NONE",
     "confidence": 0.0-1.0,
@@ -96,16 +112,20 @@ class GemmaAdapter:
     This creates a self-improving loop — every scan enriches future scans.
     """
 
+    MAX_TOOL_ITERATIONS = 4
+
     def __init__(
         self,
         settings: Settings,
         memory: AcousticMemory | None = None,
+        toolbox: Toolbox | None = None,
     ) -> None:
         self._google_api_key = settings.google_ai_api_key
         self._ollama_url = settings.ollama_base_url
         self._model = settings.gemma_model
         self._client = httpx.AsyncClient(timeout=300.0)
         self._memory = memory
+        self._toolbox = toolbox
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -269,8 +289,9 @@ class GemmaAdapter:
         if ais_gaps:
             parts.append(f"\nAIS gaps detected: {len(ais_gaps)} vessels went dark")
             for gap in ais_gaps:
+                name = gap.vessel_name or "unnamed"
                 parts.append(
-                    f"  - {gap.vessel_name or gap.vessel_id}: "
+                    f"  - {name} (MMSI: {gap.vessel_id}): "
                     f"dark since {gap.gap_start}, "
                     f"{gap.gap_duration_hours:.1f}h, "
                     f"flag: {gap.flag_state or 'unknown'}, "
@@ -314,55 +335,97 @@ class GemmaAdapter:
         return json.loads(text_out)
 
     async def _call_ollama(self, text: str) -> dict:
-        """Call Gemma via local Ollama instance (text-only threat assessor)."""
+        """Call Gemma via local Ollama, with optional agent tool loop.
+
+        Loop semantics:
+          1. POST messages (+ tool schemas if Toolbox configured).
+          2. If response has tool_calls → dispatch each tool, append the
+             assistant turn AND tool result messages, re-POST.
+          3. If response has no tool_calls → that's the final JSON verdict.
+          4. Bail at MAX_TOOL_ITERATIONS to prevent runaway loops.
+        """
         url = f"{self._ollama_url}/api/chat"
 
-        payload = {
+        messages: list[dict] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": text},
+        ]
+
+        payload: dict = {
             "model": self._model,
             "stream": False,
             "format": "json",
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text},
-            ],
+            "messages": messages,
             "options": {"temperature": 0.1},
         }
+        if self._toolbox is not None:
+            payload["tools"] = self._toolbox.schemas
 
-        resp = await self._client.post(url, json=payload)
-        resp.raise_for_status()
+        for iteration in range(self.MAX_TOOL_ITERATIONS):
+            resp = await self._client.post(url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            msg = data["message"]
+            tool_calls = msg.get("tool_calls") or []
 
-        data = resp.json()
-        text_out = data["message"]["content"].strip()
+            if not tool_calls:
+                # Final answer — parse JSON verdict.
+                text_out = (msg.get("content") or "").strip()
+                if text_out.startswith("```"):
+                    text_out = text_out.split("\n", 1)[-1]
+                if text_out.endswith("```"):
+                    text_out = text_out[: text_out.rfind("```")].strip()
 
-        # Gemma sometimes wraps JSON in markdown code blocks — strip them
-        if text_out.startswith("```"):
-            text_out = text_out.split("\n", 1)[-1]  # remove ```json line
-        if text_out.endswith("```"):
-            text_out = text_out[: text_out.rfind("```")].strip()
+                log.info(
+                    "gemma_response",
+                    source="ollama",
+                    model=self._model,
+                    raw_length=len(text_out),
+                    tool_iterations=iteration,
+                )
 
-        log.info("gemma_response", source="ollama", model=self._model, raw_length=len(text_out))
+                if not text_out:
+                    log.warning("gemma_empty_response", source="ollama")
+                    return self._fallback_response("Model returned empty response")
 
-        if not text_out:
-            log.warning("gemma_empty_response", source="ollama")
-            return {
-                "threat_level": "NONE",
-                "confidence": 0.0,
-                "reasoning": "Model returned empty response",
-                "vessel_type": "none",
-                "recommended_action": "none",
-            }
+                try:
+                    return json.loads(text_out)
+                except json.JSONDecodeError:
+                    log.warning("gemma_invalid_json", source="ollama", raw=text_out[:200])
+                    return self._fallback_response(f"Invalid JSON: {text_out[:100]}")
 
-        try:
-            return json.loads(text_out)
-        except json.JSONDecodeError:
-            log.warning("gemma_invalid_json", source="ollama", raw=text_out[:200])
-            return {
-                "threat_level": "NONE",
-                "confidence": 0.0,
-                "reasoning": f"Model returned invalid JSON: {text_out[:100]}",
-                "vessel_type": "none",
-                "recommended_action": "none",
-            }
+            # Tool calls requested — run each, append results, loop.
+            messages.append({
+                "role": "assistant",
+                "content": msg.get("content") or "",
+                "tool_calls": tool_calls,
+            })
+
+            for call in tool_calls:
+                fn = call["function"]
+                name = fn["name"]
+                args = fn["arguments"]
+                if isinstance(args, str):
+                    args = json.loads(args)
+                result_json = await self._toolbox.dispatch(name, args)
+                messages.append({"role": "tool", "name": name, "content": result_json})
+
+            payload["messages"] = messages
+
+        log.warning("gemma_tool_loop_exhausted", iterations=self.MAX_TOOL_ITERATIONS)
+        return self._fallback_response(
+            f"Tool loop exhausted at {self.MAX_TOOL_ITERATIONS} iterations"
+        )
+
+    def _fallback_response(self, reason: str) -> dict:
+        """Synthesize a NONE-verdict dict when the model can't produce one."""
+        return {
+            "threat_level": "NONE",
+            "confidence": 0.0,
+            "reasoning": reason,
+            "vessel_type": "none",
+            "recommended_action": "none",
+        }
 
     def _parse_response(self, raw: dict) -> ClassificationResult:
         """Parse model JSON into domain object."""

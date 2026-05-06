@@ -82,28 +82,23 @@ def _build_source(source_id: str, settings):
 @router.post("/scan", response_model=ScanResponse)
 async def run_scan(req: ScanRequest, request: Request):
     """Run the full pipeline scan on a given date + hydrophone source."""
-    from ocean_sentinel.adapters.gemma import GemmaAdapter
     from ocean_sentinel.services.audio_analyzer import AudioAnalyzer
-    from ocean_sentinel.services.correlation import CorrelationService
     from ocean_sentinel.services.classifier import ThreatClassifierService
 
     import uuid
     from ocean_sentinel.domain.models import AcousticFeatures, DetectionEvent
 
     settings = request.app.state.settings
-    memory = request.app.state.memory
     training_logger = request.app.state.training_logger
     store = request.app.state.store
 
     source = _build_source(req.source, settings)
     analyzer = AudioAnalyzer(settings)
-    gemma = GemmaAdapter(settings, memory=memory)
-    correlation = CorrelationService(
-        request.app.state.gfw,
-        request.app.state.copernicus,
-        settings,
+    classifier = ThreatClassifierService(
+        analyzer=analyzer,
+        cnn=request.app.state.cnn,
+        engine=request.app.state.decision_engine,
     )
-    classifier = ThreatClassifierService(analyzer, gemma, cnn=request.app.state.cnn)
 
     dt = datetime.strptime(req.date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
@@ -142,33 +137,29 @@ async def run_scan(req: ScanRequest, request: Request):
             ))
 
             if scanned % req.sample_every == 0:
-                # Lazy correlation: only fetch AIS / ocean if the classifier
-                # escalates to Gemma. CNN fast-path skips this entirely
-                # (saves ~13% of GFW calls on val).
-                correlation_box: dict = {"ais_gaps": [], "ocean": None}
-
-                async def _correlate():
-                    gaps, oc = await correlation.correlate(analyzed, features)
-                    correlation_box["ais_gaps"] = gaps
-                    correlation_box["ocean"] = oc
-                    return gaps, oc
-
-                result = await classifier.classify(
-                    audio=analyzed, correlator=_correlate,
-                )
-                ais_gaps = correlation_box["ais_gaps"]
-                ocean = correlation_box["ocean"]
+                # AIS lookup is now done inside DecisionEngine when the
+                # tier decision actually needs it (strong-ship branch).
+                # No outer correlator hook required.
+                result = await classifier.classify(audio=analyzed)
                 classified += 1
+
+                # Surface engine evidence onto the response payload.
+                windowed = result.raw_output.get("windowed", {}) or {}
+                ais = (
+                    result.raw_output.get("provenance", {})
+                    .get("evidence", {})
+                    .get("ais", {})
+                )
 
                 classifications.append(ClassificationResult(
                     time=time_str,
                     threat_level=result.threat_level.value,
                     confidence=result.confidence,
                     reasoning=result.reasoning,
-                    vessel_type=result.raw_output.get("vessel_type"),
-                    recommended_action=result.raw_output.get("recommended_action"),
-                    ais_gaps=len(ais_gaps),
-                    has_ocean_data=ocean is not None,
+                    vessel_type=windowed.get("vessel_type"),
+                    recommended_action=None,
+                    ais_gaps=ais.get("n_vessels", 0),
+                    has_ocean_data=False,
                     lat=analyzed.location.lat,
                     lon=analyzed.location.lon,
                 ))
@@ -180,6 +171,7 @@ async def run_scan(req: ScanRequest, request: Request):
                     features=AcousticFeatures.from_analyzer_dict(features),
                     context_text=f"{source.source_id} | {analyzed.time_window.start.isoformat()}",
                     gemma_verdict=result.raw_output,
+                    source_id=source.source_id,
                 )
 
                 event = DetectionEvent(
@@ -190,8 +182,8 @@ async def run_scan(req: ScanRequest, request: Request):
                     confidence=result.confidence,
                     classification_reasoning=result.reasoning,
                     audio_segment=None,
-                    ais_gaps=ais_gaps,
-                    ocean_conditions=ocean,
+                    ais_gaps=[],
+                    ocean_conditions=None,
                     raw_model_output=result.raw_output,
                 )
                 await store.save_event(event)
@@ -202,7 +194,6 @@ async def run_scan(req: ScanRequest, request: Request):
             failed += 1
 
     await source.close()
-    await gemma.close()
 
     return ScanResponse(
         date=req.date,

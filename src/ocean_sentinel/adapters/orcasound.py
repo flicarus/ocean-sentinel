@@ -6,10 +6,13 @@ v2 uses the Orcasite public API instead — no listing needed:
     https://live.orcasound.net/api/json/feeds          (all nodes)
     https://live.orcasound.net/api/json/feed_streams   (streams per feed)
 
-Each adapter instance is pinned to one node. `fetch_at_offset(dt, ...)` ignores
-`dt` — Orcasound streams are timestamp-keyed, not datetime-keyed. The returned
-AudioSegment carries the real capture time in `time_window`, which is what
-downstream correlation + persistence actually use.
+Each adapter instance is pinned to one node. The `dt` passed to
+`fetch_at_offset` is used on the first call to pin the closest available
+stream — Orcasound retention is sparse (often one viable stream per node
+across multiple years), so we accept whatever's nearest and log a warning
+when the actual capture date drifts more than a day from what the caller
+asked for. Downstream correlation must use `audio.time_window.start`, not
+the requested datetime, as the source of truth.
 """
 from __future__ import annotations
 
@@ -76,14 +79,32 @@ class OrcasoundAdapter:
 
     async def _find_viable_stream(
         self, feed_id: str, bucket: str,
+        target_date: datetime | None = None,
     ) -> tuple[int, list[str]]:
-        """Newest stream with >= 3 segments. Returns (playlist_timestamp, segments)."""
+        """Stream with >= 3 segments. Returns (playlist_timestamp, segments).
+
+        If `target_date` is given, candidate streams are tried in order of
+        |playlist_timestamp - target_date|, so the returned stream is the
+        one whose capture date is closest to what the caller asked for. If
+        no `target_date`, falls back to API ordering (newest first).
+        """
         resp = await self._client.get(
             f"{ORCASITE_API}/feed_streams",
-            params={"filter[feed_id]": feed_id, "page[limit]": 20},
+            params={"filter[feed_id]": feed_id, "page[limit]": 50},
         )
         resp.raise_for_status()
-        for stream in resp.json()["data"]:
+        streams = resp.json()["data"]
+
+        if target_date is not None:
+            target_ts = target_date.timestamp()
+            streams = sorted(
+                streams,
+                key=lambda s: abs(
+                    int(s["attributes"]["playlist_timestamp"]) - target_ts
+                ),
+            )
+
+        for stream in streams:
             ts = int(stream["attributes"]["playlist_timestamp"])
             m3u8_url = (
                 f"https://{bucket}.s3.amazonaws.com/"
@@ -105,21 +126,32 @@ class OrcasoundAdapter:
             f"No viable stream found for node '{self.node_name}'"
         )
 
-    async def _ensure_stream(self) -> None:
+    async def _ensure_stream(self, target_date: datetime | None = None) -> None:
         if self._segments is not None:
             return
         feed_id, bucket = await self._fetch_node_feed_id()
-        ts, segments = await self._find_viable_stream(feed_id, bucket)
+        ts, segments = await self._find_viable_stream(
+            feed_id, bucket, target_date=target_date,
+        )
         self._stream_ts = ts
         self._segments = segments
         self._bucket = bucket
-        log.info(
-            "orcasound_stream_selected",
-            node=self.node_name,
-            stream_ts=ts,
-            segments=len(segments),
-            bucket=bucket,
-        )
+
+        actual_date = datetime.fromtimestamp(ts, tz=timezone.utc)
+        log_kwargs = {
+            "node": self.node_name,
+            "stream_ts": ts,
+            "segments": len(segments),
+            "bucket": bucket,
+            "actual_date": actual_date.isoformat(),
+        }
+        if target_date is not None:
+            delta_days = abs((actual_date - target_date).total_seconds()) / 86400.0
+            log_kwargs["target_date"] = target_date.isoformat()
+            log_kwargs["delta_days"] = round(delta_days, 1)
+            if delta_days > 1.0:
+                log.warning("orcasound_date_mismatch", **log_kwargs)
+        log.info("orcasound_stream_selected", **log_kwargs)
 
     async def fetch_at_offset(
         self,
@@ -127,9 +159,11 @@ class OrcasoundAdapter:
         offset_seconds: int,
         duration_seconds: int = 60,
     ) -> AudioSegment:
-        """dt is ignored; offset_seconds selects which cached segment to fetch."""
-        del dt
-        await self._ensure_stream()
+        """First call uses `dt` to pin the closest available stream;
+        subsequent calls on this adapter reuse the pinned stream regardless
+        of `dt`. `offset_seconds` selects a 10-second segment within it.
+        """
+        await self._ensure_stream(target_date=dt)
         assert self._segments is not None and self._stream_ts is not None
         assert self._bucket is not None
 
