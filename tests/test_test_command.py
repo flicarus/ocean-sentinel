@@ -76,11 +76,17 @@ def test_manifest_loads_and_has_expected_samples():
     samples = test_command._load_manifest()
     assert len(samples) == 5
     paths = {s["path"] for s in samples}
-    assert "vessel_tug.wav" in paths
+    # All vessel clips must be HELD-OUT — Tug got dropped because every
+    # Tug clip on disk was in training. Cargo/Passenger/Tanker each
+    # contribute one unseen clip.
     assert "vessel_cargo.wav" in paths
     assert "vessel_passenger.wav" in paths
+    assert "vessel_tanker.wav" in paths
     assert "ambient_quiet.wav" in paths
     assert "ambient_busy.wav" in paths
+    # Spot-check the held_out flag is set on vessel rows
+    vessel_rows = [s for s in samples if s["expected_label"] == "ship"]
+    assert all(s.get("held_out") for s in vessel_rows)
 
 
 def test_bundled_samples_present_on_disk():

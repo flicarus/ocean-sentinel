@@ -83,16 +83,21 @@ def _synth_ambient_busy(out: Path) -> None:
 def main() -> None:
     print(f"writing test samples to {OUT}")
 
+    # ALL three vessel clips below are *unseen by CNN v7.4* — their
+    # (class, number) tuples do NOT appear in any training JSONL under
+    # data/training/. Verified by scripts/evaluate_unseen.py. The
+    # earlier bundle accidentally used Tug/49 and Cargo/103 which WERE
+    # in training, defeating the point of `os test`.
     samples = [
-        ("vessel_tug.wav",
-         "data/deepship/Tug/49.wav", 30.0,
-         "DeepShip / Tug / 49.wav (CC-BY-NC 4.0 research use)"),
         ("vessel_cargo.wav",
-         "data/deepship/Cargo/103.wav", 30.0,
-         "DeepShip / Cargo / 103.wav (CC-BY-NC 4.0 research use)"),
+         "data/deepship/Cargo/38.wav", 30.0,
+         "DeepShip / Cargo / 38.wav (held-out, CC-BY-NC 4.0 research use)"),
         ("vessel_passenger.wav",
-         "data/deepship/Passengership/14.wav", 5.0,
-         "DeepShip / Passengership / 14.wav (CC-BY-NC 4.0 research use)"),
+         "data/deepship/Passengership/4.wav", 30.0,
+         "DeepShip / Passengership / 4.wav (held-out, CC-BY-NC 4.0 research use)"),
+        ("vessel_tanker.wav",
+         "data/deepship/Tanker/5.wav", 5.0,
+         "DeepShip / Tanker / 5.wav (held-out, CC-BY-NC 4.0 research use)"),
     ]
 
     for name, src, offset, attribution in samples:
@@ -117,29 +122,39 @@ def main() -> None:
 # Each sample below has a known label so the test command can verify
 # the calibrated pipeline produces a sensible decision on real audio.
 #
+# IMPORTANT — held-out integrity:
+# All vessel clips below are confirmed UNSEEN by the trained CNN v7.4.
+# Their (class, clip_id) tuples do NOT appear in any training JSONL
+# under data/training/. This makes `os test` a real generalisation
+# probe rather than a memorisation check.
+# Verified by scripts/evaluate_unseen.py.
+#
 # Vessel clips are trimmed from DeepShip (https://www.kaggle.com/datasets/
 # pranabkumarbose/deepship-data), used here under research / fair use
 # for product validation. Ambient clips are synthesised deterministically
 # so labels are guaranteed correct.
 
 samples:
-  - path: vessel_tug.wav
-    expected_label: ship
-    duration_s: 30
-    source: DeepShip Tug clip 49.wav, 30 s window from offset 30 s
-    notes: tug-class signature, low-band engine concentrated below 200 Hz
-
   - path: vessel_cargo.wav
     expected_label: ship
     duration_s: 30
-    source: DeepShip Cargo clip 103.wav, 30 s window from offset 30 s
-    notes: cargo-class signature, broadband below 1 kHz
+    source: DeepShip Cargo clip 38.wav, 30 s window from offset 30 s
+    held_out: true
+    notes: cargo-class signature, broadband below 1 kHz, never in training
 
   - path: vessel_passenger.wav
     expected_label: ship
     duration_s: 30
-    source: DeepShip Passengership clip 14.wav, 30 s window from offset 5 s
-    notes: passenger-vessel signature
+    source: DeepShip Passengership clip 4.wav, 30 s window from offset 30 s
+    held_out: true
+    notes: passenger-vessel signature, never in training
+
+  - path: vessel_tanker.wav
+    expected_label: ship
+    duration_s: 30
+    source: DeepShip Tanker clip 5.wav, 30 s window from offset 5 s
+    held_out: true
+    notes: tanker-class signature, never in training
 
   - path: ambient_quiet.wav
     expected_label: not_ship
