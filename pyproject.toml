@@ -31,3 +31,6 @@ os = "ocean_sentinel.cli.main:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"ocean_sentinel.test_samples" = ["*.wav", "*.yaml"]

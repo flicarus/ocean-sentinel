@@ -39,6 +39,9 @@ CHAT/
 /ais_spectrograms.zip
 /maciej_new_rows.jsonl
 
+# Bundled test samples ARE shipped with the package — override the *.wav rule.
+!src/ocean_sentinel/test_samples/**/*.wav
+
 # Local MCP config (absolute paths, personal)
 .mcp.json
 

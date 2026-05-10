@@ -1,10 +1,12 @@
 """Ocean Sentinel CLI — `os` entrypoint.
 
-`os onboard`         → live Gemma function-calling onboarding via Ollama
-`os onboard --demo`  → scripted walkthrough with mocked tools (offline-safe)
-`os refresh <site>`  → re-fit adapter + recalibrate threshold on
-                       accumulated ambient (for sites running for some
-                       time after onboarding)
+`os onboard`          → live Gemma function-calling onboarding via Ollama
+`os onboard --demo`   → scripted walkthrough with mocked tools (offline-safe)
+`os refresh <site>`   → re-fit adapter + recalibrate threshold on
+                        accumulated ambient
+`os test <site>`      → run bundled known-label samples through the
+                        calibrated pipeline — proof the system isn't
+                        a mock
 """
 from __future__ import annotations
 
@@ -48,6 +50,114 @@ app = typer.Typer(
 def _root() -> None:
     """Multi-command shell. Forces Typer to keep subcommands as subcommands
     even when only one is registered (otherwise it collapses to direct call)."""
+
+
+@app.command()
+def test(
+    site_id: str = typer.Argument(..., help="Site identifier (kebab-case)."),
+) -> None:
+    """Run bundled known-label samples through the calibrated pipeline.
+
+    Five samples ship with the package:
+    - 3 real DeepShip vessel clips (tug, cargo, passenger) → expected ship
+    - 2 deterministically-synthesised ambient clips → expected not_ship
+
+    The site's per-site adapter and conformal threshold are loaded
+    automatically. Output shows per-sample expected vs actual decision
+    plus an aggregate score, so you can confirm — without trusting
+    marketing copy — that your calibrated pipeline actually works on
+    real audio.
+
+    If the site has not been onboarded yet, Gemma offers to run the
+    Site Onboarding Protocol first — without per-site calibration the
+    results would silently fall back to the global threshold and look
+    misleading.
+    """
+    from .test_command import run_tests, is_site_onboarded
+
+    show_banner()
+    console.print(f"  [grey50]site[/] [bold]{site_id}[/]")
+    console.print(f"  [grey50]samples[/] [bold]bundled (5)[/]\n")
+
+    if not is_site_onboarded(site_id):
+        gemma_say(
+            f"I can't find a per-site calibration for '{site_id}' — this "
+            f"site hasn't been onboarded into SOFAR AI yet. Without "
+            f"calibration the test would fall back to the global "
+            f"threshold trained on a different acoustic distribution, "
+            f"and the numbers would likely be unreliable.\n\n"
+            f"The Site Onboarding Protocol is a short interactive walkthrough "
+            f"(about 5 minutes). It records 3 minutes of your site's "
+            f"ambient, fits a tiny per-site adapter on top of the base "
+            f"CNN, and calibrates a false-alarm threshold with provable "
+            f"guarantees. Strongly recommended before running tests."
+        )
+        if confirm(f"Run the Site Onboarding Protocol for '{site_id}' now?",
+                   default_yes=True):
+            err_check = _check_ollama(DEFAULT_HOST)
+            if err_check:
+                error(f"Cannot reach Ollama at {DEFAULT_HOST} — {err_check}")
+                warn("Onboarding requires `ollama serve` running with "
+                     f"{DEFAULT_MODEL} pulled. Start it and re-run "
+                     f"`os onboard` first, then retry `os test {site_id}`.")
+                raise typer.Exit(1)
+            _run_live(model=DEFAULT_MODEL, host=DEFAULT_HOST)
+            if not is_site_onboarded(site_id):
+                warn(
+                    f"Onboarding did not complete for '{site_id}' "
+                    f"(no adapter.pt found). Skipping test."
+                )
+                raise typer.Exit(1)
+            console.print()
+            ok(f"site '{site_id}' onboarded — running test now...")
+            console.print()
+        else:
+            warn(
+                f"OK — onboarding skipped. Without per-site calibration "
+                f"the test would produce misleading numbers; not running "
+                f"it. When you're ready: `os onboard` (then `os test "
+                f"{site_id}`)."
+            )
+            raise typer.Exit(0)
+
+    with tool_call("os.test", {"site_id": site_id}):
+        result = run_tests(site_id=site_id)
+
+    if not result.get("ok"):
+        fail(result.get("error", "test failed"))
+        raise typer.Exit(1)
+
+    rows: list[tuple[str, str]] = []
+    for r in result["results"]:
+        check = "✓" if r.get("correct") else "✗"
+        if r.get("error"):
+            value = f"[red]{check} ERROR · {r['error']}[/]"
+        else:
+            tier = r.get("decision_tier", "?")
+            p = r.get("ship_prob", 0.0)
+            colour = "green" if r.get("correct") else "red"
+            value = (
+                f"[{colour}]{check}[/]  expected={r['expected_label']:<8}  "
+                f"got={tier}  p={p:.2f}"
+            )
+        rows.append((r["path"], value))
+
+    table(rows, title=f"os test · {site_id}")
+
+    n_ok = result["n_correct"]
+    n_total = result["n_samples"]
+    if n_ok == n_total:
+        ok(f"all {n_total} samples classified as expected · pipeline working")
+    elif n_ok >= n_total - 1:
+        ok(
+            f"{n_ok}/{n_total} samples classified as expected · 1 near-threshold "
+            f"miss is normal on OOD sites — see `os refresh` if persistent"
+        )
+    else:
+        warn(
+            f"{n_ok}/{n_total} samples classified as expected — your site may "
+            f"need refresh. Check decision_tier vs expected_label above."
+        )
 
 
 @app.command()

@@ -1,0 +1,40 @@
+# Bundled test samples for `os test`.
+#
+# Each sample below has a known label so the test command can verify
+# the calibrated pipeline produces a sensible decision on real audio.
+#
+# Vessel clips are trimmed from DeepShip (https://www.kaggle.com/datasets/
+# pranabkumarbose/deepship-data), used here under research / fair use
+# for product validation. Ambient clips are synthesised deterministically
+# so labels are guaranteed correct.
+
+samples:
+  - path: vessel_tug.wav
+    expected_label: ship
+    duration_s: 30
+    source: DeepShip Tug clip 49.wav, 30 s window from offset 30 s
+    notes: tug-class signature, low-band engine concentrated below 200 Hz
+
+  - path: vessel_cargo.wav
+    expected_label: ship
+    duration_s: 30
+    source: DeepShip Cargo clip 103.wav, 30 s window from offset 30 s
+    notes: cargo-class signature, broadband below 1 kHz
+
+  - path: vessel_passenger.wav
+    expected_label: ship
+    duration_s: 30
+    source: DeepShip Passengership clip 14.wav, 30 s window from offset 5 s
+    notes: passenger-vessel signature
+
+  - path: ambient_quiet.wav
+    expected_label: not_ship
+    duration_s: 30
+    source: synthetic broadband ambient (deterministic seed=101)
+    notes: pink-tilt noise, no vessel signature, no transients
+
+  - path: ambient_busy.wav
+    expected_label: not_ship
+    duration_s: 30
+    source: synthetic textured ambient (deterministic seed=202)
+    notes: broadband + sparse rain-tick transients, no vessel signature
