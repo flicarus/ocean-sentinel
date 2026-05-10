@@ -72,26 +72,40 @@ def _trained_deepship_ids() -> set[tuple[str, str]]:
     return out
 
 
-def _find_unseen_deepship() -> list[tuple[str, Path]]:
-    """Pick a small panel of unseen DeepShip vessels. Returns list of
-    (label, path) where label is always 'ship'."""
+def _find_unseen_deepship(per_class: int = 5) -> list[tuple[str, Path, float]]:
+    """Pick a panel of unseen DeepShip vessels. Returns list of
+    (label, path, offset_s) — same path can appear at multiple offsets
+    when the underlying recording is long enough.
+
+    Default: up to 5 clips per class (Cargo / Passengership / Tanker)
+    × up to 2 offsets each (30 s and 90 s) = up to 30 vessel evaluations.
+    """
     trained = _trained_deepship_ids()
-    out: list[tuple[str, Path]] = []
+    out: list[tuple[str, Path, float]] = []
     for cls in ("Cargo", "Passengership", "Tanker"):
         folder = Path(f"data/deepship/{cls}")
         if not folder.exists():
             continue
+        kept = 0
         for p in sorted(folder.glob("*.wav"),
                          key=lambda x: int(x.stem) if x.stem.isdigit() else 9999):
             if (cls.lower(), p.stem) in trained:
                 continue
             try:
-                if librosa.get_duration(path=str(p)) < CLIP_SECONDS:
-                    continue
+                duration = librosa.get_duration(path=str(p))
             except Exception:
                 continue
-            out.append(("ship", p))
-            if sum(1 for _, q in out if cls.lower() in str(q).lower()) >= 3:
+            if duration < CLIP_SECONDS:
+                continue
+            # primary window
+            out.append(("ship", p, 30.0))
+            # second window if recording is long enough — captures
+            # within-clip variability the model has to handle in
+            # production (engine load shifts, vessels transiting).
+            if duration >= 60 + 90:
+                out.append(("ship", p, 90.0))
+            kept += 1
+            if kept >= per_class:
                 break
     return out
 
@@ -144,8 +158,12 @@ def _synth_ambient(out: Path, seed: int) -> Path:
 # ── inference helpers ──────────────────────────────────────────────────
 
 
-def _raw_cnn_predict(clf: CNNV7Classifier, clip: Path) -> dict:
-    y, sr = librosa.load(str(clip), sr=SR, mono=True, duration=CLIP_SECONDS)
+def _raw_cnn_predict(clf: CNNV7Classifier, clip: Path,
+                     offset: float = 0.0) -> dict:
+    y, sr = librosa.load(
+        str(clip), sr=SR, mono=True,
+        offset=offset, duration=CLIP_SECONDS,
+    )
     if y.size < sr * 5:
         return {"ok": False, "error": "too short"}
     mel = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128, fmax=1000)
@@ -180,8 +198,11 @@ def main() -> None:
     eval_set: list[dict] = []
 
     # IN-DISTRIBUTION + UNSEEN (DeepShip clips not in any training jsonl)
-    for label, p in _find_unseen_deepship():
-        eval_set.append({"group": "in_dist_unseen", "label": label, "path": p})
+    for label, p, offset in _find_unseen_deepship(per_class=5):
+        eval_set.append({
+            "group": "in_dist_unseen", "label": label, "path": p,
+            "offset": offset,
+        })
 
     # OOD synthetic reef (a site we have NEVER trained on)
     reef_path = Path("data/synthetic/eval_reef.wav")
@@ -206,7 +227,9 @@ def main() -> None:
 
     rows = []
     for item in eval_set:
-        raw = _raw_cnn_predict(clf, item["path"])
+        offset = item.get("offset", 0.0)
+        raw = _raw_cnn_predict(clf, item["path"], offset=offset)
+        # full pipeline doesn't take offset; uses the default 60s window
         full = simulate_detection(site_id="eval-unseen", clip=str(item["path"]))
         if not raw.get("ok") or not full.get("ok"):
             continue
@@ -214,6 +237,7 @@ def main() -> None:
         full_label = _ship_label_from_tier(full.get("decision_tier", ""))
         rows.append({
             **item,
+            "offset":     offset,
             "ship_prob":  raw["ship_prob"],
             "uncertainty": raw["uncertainty"],
             "raw_pred":   raw_pred,
@@ -225,15 +249,17 @@ def main() -> None:
 
     # ── per-clip table ────────────────────────────────────────────────
     print(f"\n{'─' * 76}\nPer-clip breakdown\n{'─' * 76}")
-    print(f"{'group':<18} {'label':<10} {'ship_p':>7} {'unc':>5} "
-          f"{'raw':<8} {'tier':<22} {'r✓':>2} {'f✓':>2}  clip")
+    print(f"{'group':<16} {'label':<8} {'off':>4} {'p':>6} {'unc':>5} "
+          f"{'raw':<8} {'tier':<20} {'r✓':>2} {'f✓':>2}  clip")
     for r in rows:
         rok = "✓" if r["raw_correct"] else "✗"
         fok = "✓" if r["full_correct"] else "✗"
-        print(f"{r['group']:<18} {r['label']:<10} "
-              f"{r['ship_prob']:>7.3f} {r['uncertainty']:>5.2f} "
-              f"{r['raw_pred']:<8} {r['tier']:<22} {rok:>2} {fok:>2}  "
-              f"{Path(r['path']).name}")
+        off = f"{r.get('offset', 0):.0f}s"
+        path_label = Path(r["path"]).parent.name + "/" + Path(r["path"]).name
+        print(f"{r['group']:<16} {r['label']:<8} {off:>4} "
+              f"{r['ship_prob']:>6.2f} {r['uncertainty']:>5.2f} "
+              f"{r['raw_pred']:<8} {r['tier']:<20} {rok:>2} {fok:>2}  "
+              f"{path_label}")
 
     # ── per-group accuracy ────────────────────────────────────────────
     groups = sorted({r["group"] for r in rows})

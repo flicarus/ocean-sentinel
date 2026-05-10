@@ -79,8 +79,16 @@ def _decide_tier(
 
     Mirrors the production policy in src/ocean_sentinel/decision/engine.py
     at a coarse level; finer gates can be layered on later.
+
+    UNCERTAINTY_MAX = 0.25 was chosen empirically: scripts/benchmark_v7_4.py
+    swept candidates 0.18-0.30 across n=35 held-out unseen samples and
+    found 0.25 maximises confident-decision rate (100%) with no loss of
+    accuracy (still 100% when the model decides). The earlier 0.20
+    bisected the day-9 unc_mean distribution (0.16-0.22) and forced
+    abstention on ~54% of borderline-confident clips. See
+    data/eval/threshold_sweep.json for the full sweep table.
     """
-    UNCERTAINTY_MAX = 0.20
+    UNCERTAINTY_MAX = 0.25
     if uncertainty > UNCERTAINTY_MAX:
         return "UNCERTAIN", "MEDIUM"
     if not conformal_pass:
