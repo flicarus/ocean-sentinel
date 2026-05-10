@@ -38,8 +38,10 @@ Kicks off a `POST /pipeline/scan` for that date right after startup.
 
 Background processes log to:
 - `/tmp/os-api.log` — FastAPI + pipeline
-- `/tmp/os-dashboard.log` — Vite dev server
 - `/tmp/ollama-serve.log` — LLM server
+
+The frontend lives in a separate repo (`~/oceansentinelfrontend`, Next.js).
+Run it with `pnpm dev` from that directory; it hits this API on `:8000`.
 
 Follow in real time:
 ```bash
@@ -64,18 +66,17 @@ cd "path/to/Sofar.ai"
 PYTHONPATH=src venv/bin/python -m uvicorn ocean_sentinel.api.app:app \
     --host 0.0.0.0 --port 8000 \
     --reload \
-    --reload-exclude 'dashboard/*' \
     --reload-exclude 'data/*' \
     --app-dir src
 ```
 API live at http://localhost:8000 · Docs at http://localhost:8000/docs
 
-### Terminal 3 — Dashboard
+### Terminal 3 — Frontend (separate repo)
 ```bash
-cd "path/to/Sofar.ai/dashboard"
-node_modules/.bin/vite --host
+cd ~/oceansentinelfrontend
+pnpm dev
 ```
-Dashboard at http://localhost:5173
+Frontend at http://localhost:3000 (Next.js).
 
 ### (Optional) Terminal 4 — bulk scan
 Runs many hydrophones × dates × offsets in sequence, writing straight to `data/training/`:
@@ -96,10 +97,10 @@ venv/bin/python -m pip install -e .
 
 That installs the `ocean_sentinel` package + all declared dependencies (chromadb, librosa, httpx, fastapi, torch, etc.).
 
-Dashboard deps:
+Frontend deps (separate repo):
 ```bash
-cd dashboard
-npm install
+cd ~/oceansentinelfrontend
+pnpm install
 ```
 
 Environment:
@@ -164,8 +165,8 @@ src/ocean_sentinel/
   domain/         pydantic models + protocols
   models/         PyTorch CNN (Backbone + VesselHead + future SpeciesHead)
   services/       AudioAnalyzer, CorrelationService, ThreatClassifierService
-dashboard/        React + Vite + Leaflet + Framer Motion frontend
 scripts/          bulk_scan.py, train_cnn.py, infer.py, run.sh
+~/oceansentinelfrontend  Next.js 16 + React 19 + Leaflet + Three.js (separate repo)
 data/             chromadb/, spectrograms/, training/, models/
 ```
 
@@ -179,5 +180,4 @@ data/             chromadb/, spectrograms/, training/, models/
 | `ModuleNotFoundError: chromadb` (or any dep) | venv missing deps | same: `pip install -e .` |
 | `bind: address already in use` on Ollama | Ollama already running | ignore, it's fine |
 | API won't start but no error | Check `/tmp/os-api.log` | often `.env` missing or port 8000 taken |
-| Hero video doesn't load | Vite cache stale | hard refresh (Cmd+Shift+R) in browser |
 | `403 Forbidden` on Orcasound | Running OLD adapter code | Restart script — Python cached the old module |
