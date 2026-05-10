@@ -104,6 +104,26 @@ similarity to a training neighbour (z-cos ≥ 0.99) have *lower* accuracy
 than sites with moderate similarity. The model's behaviour at this site
 class is not predicted by signature distance.
 
+### Extended study (n = 14, post-submission preparation)
+
+Doubling the sample by including the held-out AIS-correlated stations
+and additional MBARI sites — see
+`scripts/extend_loho_correlation.py` and
+`data/eval/loho_correlation_extended.json` — washes the apparent n=7
+signal out further:
+
+**Pearson r(cosine, accuracy) = −0.23** (p = 0.41, n = 14)
+**Spearman ρ(cosine, accuracy) = −0.09** (p = 0.75, n = 14)
+
+Both correlations sit well inside the null hypothesis confidence band.
+The earlier n = 7 result was a small-sample artefact: with twice the
+data the correlation collapses toward zero on both Pearson and
+Spearman, on top of remaining statistically insignificant. This is
+the cleanest possible empirical case for the §5 decision below: there
+is no usable predictive relationship between signature distance and
+held-out accuracy in our corpus, and per-site adaptation cannot be
+gated on cosine without measurable risk.
+
 ## 4. Interpretation
 
 We have a small sample, so we resist overfitting an explanation, but

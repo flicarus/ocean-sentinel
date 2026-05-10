@@ -21,12 +21,16 @@ write-up can come here, find the underlying eval data file in
 | Held-out memorisation probe (raw, vessels only) | **100 %** | 29 | 88.0 – 100 % | `data/eval/benchmark_v7_4.json` |
 | Held-out probe (full pipeline) | **100 %** | 35 | 90.0 – 100 % | `data/eval/benchmark_v7_4.json` |
 | OOD synthetic-reef + per-site adapter (FA reduction) | **90.3 % → 3.2 %** | 31 windows | — | `scripts/measure_safeguard_impact.py` |
-| Cosine-similarity correlation with accuracy (n=14, post-extension) | **r = +0.52, ρ = +0.12** | 14 | — | `data/eval/loho_correlation_extended.json` |
+| Cross-station eval (NOAA SanctSound, untrained sites) | median ship_prob **0.849**, fire 80 %, abstain 0 % | 20 windows × 4 sites | — | `data/eval/external_sanctsound.json` |
+| Cosine-similarity correlation with accuracy (n=14, post-extension) | **r = −0.23 (p=0.41), ρ = −0.09 (p=0.75)** | 14 | — | `data/eval/loho_correlation_extended.json` |
 
-The Pearson/Spearman disagreement is itself a finding: the apparent
-linear correlation collapses to almost zero when ranks are used,
-indicating outlier-driven artefact. See
-[`docs/empirical_findings.md`](empirical_findings.md).
+Both the Pearson and Spearman correlations are weak and not
+statistically significant (p > 0.4). This is itself a finding: with
+n=14 sites the data does not support a usable predictive relationship
+between cosine similarity to the training distribution and per-site
+accuracy. The earlier n=7 result (r = −0.57, p = 0.18) was a
+small-sample artefact that did not survive doubling the evaluation set.
+See [`docs/empirical_findings.md`](empirical_findings.md).
 
 ### Operations
 
@@ -66,13 +70,30 @@ indicating outlier-driven artefact. See
    **Pilot deliverable**: 30+ verified ambient recordings from a single
    reserve, ground-truthed by the partner organisation.
 
-2. **Cross-sensor evaluation**
-   Reason: every clip we have was recorded with a hydrophone whose
-   transfer function is consistent within its dataset (DeepShip,
-   Orcasound, MBARI). We have not tested whether v7.4 generalises to a
-   different hydrophone make / sample-rate / gain setting.
+2. **Cross-sensor evaluation with ground truth**
+   Reason: we now have *unsupervised* cross-station evidence — 20
+   windows across 4 NOAA SanctSound stations (Channel Islands, Gray's
+   Reef, Hawaii, Monterey Bay) that the model has never seen. Pipeline
+   runs cleanly: 0 % UNCERTAIN abstentions, latency holds at scale,
+   median ship_prob 0.849, fire rate 80 %. But we lack per-window AIS
+   ground truth — these are MPAs near shipping lanes where vessels are
+   plausibly present, so a high fire rate is consistent with both
+   "model is right" and "model over-fires". The mb03 (Monterey Bay)
+   station produces near-constant 0.92 across all 5 widely-spaced
+   windows (~0.0005 variance) even though the underlying audio is *not*
+   flat (RMS 0.024–0.074, spectral centroid 86–216 Hz across the same
+   windows). Two readings are consistent with this: (a) the model
+   detects a persistent vessel-signature mel-spec pattern that the
+   simple time-domain stats miss, plausible for a busy commercial port
+   site; or (b) the model has saturated for this station's acoustic
+   character. Conversely ci03 has near-flat audio statistics
+   (RMS ~0.0075 across all windows) yet variable model output
+   (0.45–0.91), which is the *expected* behaviour of a model that
+   responds to spectral structure rather than total energy. Neither
+   reading can be confirmed without AIS overlay.
    **Pilot deliverable**: deploy on at least one site whose hardware
-   was not in the training corpus and measure FA over a 30-day window.
+   was not in the training corpus and measure FA over a 30-day window
+   with NOAA's AIS-correlated detection products as ground truth.
 
 3. **Independent vessel dataset**
    Every available vessel clip on disk (DeepShip, ShipsEar, MBARI
