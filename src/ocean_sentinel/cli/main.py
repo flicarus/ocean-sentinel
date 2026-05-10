@@ -2,6 +2,9 @@
 
 `os onboard`         → live Gemma function-calling onboarding via Ollama
 `os onboard --demo`  → scripted walkthrough with mocked tools (offline-safe)
+`os refresh <site>`  → re-fit adapter + recalibrate threshold on
+                       accumulated ambient (for sites running for some
+                       time after onboarding)
 """
 from __future__ import annotations
 
@@ -45,6 +48,92 @@ app = typer.Typer(
 def _root() -> None:
     """Multi-command shell. Forces Typer to keep subcommands as subcommands
     even when only one is registered (otherwise it collapses to direct call)."""
+
+
+@app.command()
+def refresh(
+    site_id: str = typer.Argument(..., help="Site identifier (kebab-case)."),
+    add: str | None = typer.Option(
+        None, "--add", help="Path to a new ambient .wav to fold into the corpus.",
+    ),
+    trust_max: float = typer.Option(
+        0.7,
+        "--trust-max",
+        help="Max ship_prob for windows to keep as 'trusted ambient' "
+             "(higher = more permissive, but risks contaminating with real ships).",
+    ),
+    alpha: float = typer.Option(
+        0.05, "--alpha", help="Target false-alarm rate for the new threshold."
+    ),
+) -> None:
+    """Re-fit per-site adapter and recalibrate conformal threshold on
+    the user's accumulated ambient.
+
+    Run this periodically (e.g. weekly) once the hydrophone has collected
+    more ambient than the original 3-minute onboarding sample. The system
+    will:
+
+    1. Combine the original onboarding ambient with everything in
+       data/sites/<site_id>/ambient/*.wav (and the optional --add path).
+    2. Filter out windows that look like real vessel events using the
+       current model — we don't want to teach the adapter that real
+       ships are ambient.
+    3. Re-fit the small per-site adapter.
+    4. Recalibrate the conformal threshold on the new (post-adapter)
+       ambient distribution.
+
+    Reports the before/after threshold so you can see the calibration
+    tighten as more data accumulates.
+    """
+    from ..gemma.refresh import refresh_site
+
+    show_banner()
+    console.print(f"  [grey50]site[/] [bold]{site_id}[/]")
+    if add:
+        console.print(f"  [grey50]+add[/] [bold]{add}[/]")
+    console.print()
+
+    with tool_call("refresh_site",
+                   {"site_id": site_id, "trust_max": trust_max, "alpha": alpha}):
+        result = refresh_site(
+            site_id=site_id,
+            additional_ambient_path=add,
+            trust_max_ship_prob=trust_max,
+            alpha=alpha,
+        )
+
+    if not result.get("ok"):
+        fail(result.get("error", "refresh failed"))
+        raise typer.Exit(1)
+
+    before = result["before"]
+    after = result["after"]
+    filt = result["filter"]
+
+    rows = [
+        ("ambient files combined",   str(result["n_ambient_files"])),
+        ("total ambient seconds",    str(result["ambient_total_seconds"])),
+        ("trusted windows",
+         f"{filt['n_trusted_windows']}/{filt['n_total_windows']}"
+         + ("  (fallback)" if filt.get("filter_fallback") else "")),
+        ("threshold (before)",
+         f"{before['threshold']:.3f}" if before.get("threshold") else "—"),
+        ("threshold (after)",        f"{after['threshold']:.3f}"),
+        ("median ambient ship_prob (before adapter retrain)",
+         f"{after['adapter_median_amb_p_before']:.3f}"),
+        ("median ambient ship_prob (after adapter retrain)",
+         f"{after['adapter_median_amb_p_after']:.3f}"),
+        ("held-out vessel recall (after)",
+         f"{after['holdout_recall']:.2f}"),
+        ("adapter epochs",           str(after["adapter_epochs"])),
+    ]
+    table(rows, title=f"refresh · {site_id}")
+
+    threshold_change = ""
+    if before.get("threshold") is not None:
+        delta = after["threshold"] - before["threshold"]
+        threshold_change = f"  ({'+' if delta >= 0 else ''}{delta:+.3f})"
+    ok(f"site refreshed · threshold {after['threshold']:.3f}{threshold_change}")
 
 
 @app.command()

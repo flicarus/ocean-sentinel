@@ -215,6 +215,7 @@ def train_site_adapter(
     holdout_recall_floor: float = 0.85,
     checkpoint: str = "data/models/cnn_v7_4.pt",
     device: str | None = None,
+    warm_start: bool = False,
 ) -> dict[str, Any]:
     """Real per-site adapter fine-tune.
 
@@ -289,8 +290,22 @@ def train_site_adapter(
     holdout_recall_before = float((hold_p_before >= 0.5).float().mean().item())
     median_before = float(amb_p_before.median().item())
 
-    # Build trainable adapter
+    # Build trainable adapter. If warm_start and a checkpoint already
+    # exists for this site, continue from it — turns successive refreshes
+    # into a continual-learning loop instead of independent retrainings.
     adapter = SiteAdapter(dim=256, bottleneck=64).to(dev)
+    existing_adapter_path = Path("data/sites") / site_id / "adapter.pt"
+    if warm_start and existing_adapter_path.exists():
+        try:
+            state_existing = torch.load(str(existing_adapter_path), map_location=dev)
+            adapter.load_state_dict(state_existing)
+            log.info("site_adapter_warm_started", path=str(existing_adapter_path))
+        except Exception as e:  # pragma: no cover — defensive
+            log.warning(
+                "site_adapter_warm_start_failed",
+                path=str(existing_adapter_path),
+                error=f"{type(e).__name__}: {e}",
+            )
     optim = torch.optim.Adam(adapter.parameters(), lr=learning_rate)
     target_zero = torch.zeros(ambient_emb.shape[0], device=dev)
 
