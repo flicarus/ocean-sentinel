@@ -221,26 +221,58 @@ def _select_adapter_strategy(similarity: float) -> dict[str, Any]:
     }
 
 
-# ── 8. finetune_adapter  [REAL — label-free validation on ambient] ─────
+# ── 8. finetune_adapter  [REAL — per-site adapter fine-tune + validation] ─
 def _finetune_adapter(
     site_id: str,
     ambient_source: str | None = None,
-    epochs: int = 10,
-    lr: float = 3e-4,
+    epochs: int = 12,
+    lr: float = 5e-3,
 ) -> dict[str, Any]:
-    """Real per-site adapter step. Without labelled ship+ambient pairs we
-    can't do supervised fine-tuning on the user's data, so this step
-    instead VALIDATES the base v7.4 against the user's ambient and reports
-    real recall. Per-site adaptation is split between this validation
-    (here) and per-site threshold calibration (Step 5)."""
-    del epochs, lr  # accepted for back-compat with the schema but unused
+    """Real per-site adapter fine-tune.
+
+    Trains a small (~33k-param) residual adapter on top of the frozen
+    v7.4 embedding so that ship_prob on the USER's ambient is suppressed
+    while held-out training-distribution vessel clips keep their high
+    ship_prob. The full v7.4 backbone+transformer+head stays frozen — we
+    only update the adapter.
+
+    Safeguards:
+    - Adapter is initialised as identity (zero up-projection), so a
+      failed fine-tune degrades to no-op.
+    - Held-out vessel-recall floor: if pushing ambient toward not_ship
+      drops recall on our 7-clip DeepShip held-out set below 0.85, we
+      revert to the last known-good adapter checkpoint.
+    - The conformal calibration in Step 5 reads the same adapter, so
+      its FA bound holds on the adapted distribution.
+    """
+    del epochs, lr   # accepted for back-compat; the trainer auto-sizes
     if not ambient_source:
         return {
             "ok": False,
             "error": "ambient_source required — provide the user's ambient .wav from Step 2",
         }
-    from .adapter import validate_adapter_on_ambient
-    return validate_adapter_on_ambient(site_id=site_id, ambient_source=ambient_source)
+    from .site_adapter import train_site_adapter
+    from .adapter import assessment_from_val_acc
+
+    out = train_site_adapter(site_id=site_id, ambient_source=ambient_source)
+    if not out.get("ok"):
+        return out
+
+    # Use adapter-applied val_acc for the assessment so the user sees
+    # how well the *adapted* model behaves on their ambient.
+    assessment, recommendation = assessment_from_val_acc(out["val_acc_after"])
+    summary_bits = [
+        f"adapter trained {out['epochs_trained']}ep",
+        f"ambient recall {out['val_acc_before']*100:.0f}%→{out['val_acc_after']*100:.0f}%",
+        f"holdout vessel recall {out['holdout_recall_before']*100:.0f}%→{out['holdout_recall_after']*100:.0f}%",
+    ]
+    return {
+        **out,
+        "final_val_acc": out["val_acc_after"],
+        "assessment": assessment,
+        "recommendation": recommendation,
+        "summary": " · ".join(summary_bits),
+    }
 
 
 # ── 9. calibrate_conformal  [REAL — split-conformal on ambient] ────────

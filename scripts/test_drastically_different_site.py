@@ -82,22 +82,23 @@ def _synth_tropical_reef(out: Path, duration_s: int = AMBIENT_SECONDS) -> Path:
     y = np.zeros(n, dtype=np.float32)
 
     # 1. Snapping-shrimp click train. Real Alpheus snaps are 1-2 ms
-    # broadband impulses with peak SPL 190+ dB at source. Recorded at
-    # distance they routinely sit 30-60 dB above background in 2-8 kHz
-    # bands. We synthesise an impulse + short exp decay (broadband by
-    # construction, not modulated by a carrier) so its high-frequency
-    # content actually dominates p95.
-    n_clicks = int(40 * duration_s)              # ~40 clicks/s
-    click_len = SR // 800                         # 1.25 ms tail
-    click_template = np.exp(-np.linspace(0, 18, click_len)).astype(np.float32)
-    click_template[0] = 1.0                       # leading impulse
-    click_positions = rng.randint(0, n - click_len, size=n_clicks)
+    # broadband impulses but at 16 kHz mono with 64 ms STFT frames the
+    # transient signature is heavily smeared, so we keep clicks at
+    # moderate amplitude — the goal of THIS synthesis is to put the
+    # CNN into a confused state (ambient-with-low-band-energy that the
+    # vessel-trained model misclassifies as ship). For a louder-click
+    # variant that triggers the snapping_shrimp flag, see the unit
+    # tests in tests/test_audio_features.py which build mel directly.
+    n_clicks = int(30 * duration_s)
+    click_positions = rng.randint(0, n - SR // 200, size=n_clicks)
+    click_template = np.exp(-np.linspace(0, 6, SR // 200)).astype(np.float32)
+    t_click = np.arange(len(click_template)) / SR
+    carrier = np.sin(2 * np.pi * 4_000 * t_click)
+    click_template *= carrier
     for pos in click_positions:
-        # 3-5x peak amplitude vs the chorus floor → p95 in HF bands
-        # rises steeply above the steady median, exactly the real-world
-        # snapping-shrimp signature.
-        amp = rng.uniform(2.0, 5.0)
-        y[pos : pos + click_len] += amp * click_template
+        end = pos + len(click_template)
+        if end < n:
+            y[pos:end] += 0.4 * click_template * rng.uniform(0.5, 1.0)
 
     # 2. Fish chorus: bandpass-filtered noise 200-800 Hz, slowly modulated
     chorus = rng.randn(n).astype(np.float32) * 0.15

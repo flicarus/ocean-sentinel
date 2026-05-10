@@ -76,11 +76,42 @@ class CNNV7Classifier:
         self._model.eval()
         self._ckpt_path = str(ckpt_path)
         self._evidence_threshold = evidence_threshold
+        self._site_adapter: torch.nn.Module | None = None
+        self._site_adapter_path: str | None = None
         log.info(
             "cnn_v7_loaded",
             ckpt=self._ckpt_path, device=str(self._device),
             params=sum(p.numel() for p in self._model.parameters()),
         )
+
+    def set_site_adapter(self, adapter_path: str | Path | None) -> None:
+        """Load a per-site SiteAdapter checkpoint to be applied on the
+        embedding before the vessel head. Pass None to clear.
+
+        Designed so failure to load (missing file, mismatched shape) is
+        non-fatal: we log and run un-adapted, matching the threshold-only
+        baseline.
+        """
+        if adapter_path is None:
+            self._site_adapter = None
+            self._site_adapter_path = None
+            return
+        path = Path(adapter_path)
+        if not path.exists():
+            log.warning("site_adapter_missing", path=str(path))
+            return
+        try:
+            from ocean_sentinel.gemma.site_adapter import load_site_adapter
+            self._site_adapter = load_site_adapter(path, self._device)
+            self._site_adapter_path = str(path)
+            log.info("site_adapter_loaded", path=str(path))
+        except Exception as e:  # pragma: no cover — defensive
+            log.warning(
+                "site_adapter_load_failed",
+                path=str(path), error=f"{type(e).__name__}: {e}",
+            )
+            self._site_adapter = None
+            self._site_adapter_path = None
 
     @torch.no_grad()
     def predict(
@@ -117,8 +148,32 @@ class CNNV7Classifier:
         spec = (spec - spec.mean()) / (spec.std() + 1e-8)
         x = torch.from_numpy(spec).unsqueeze(0).unsqueeze(0).float().to(self._device)
 
-        out = self._model(x)
-        evidence = out["evidence"][0]                       # (2,)
+        # Forward path. When a per-site adapter is set, we run the
+        # backbone+transformer ourselves so we can splice it in between
+        # the embedding and the vessel head, then re-use the model's
+        # auxiliary heads on the original embedding.
+        if self._site_adapter is None:
+            out = self._model(x)
+            evidence = out["evidence"][0]
+            embedding_for_output = out["embedding"][0]
+        else:
+            feats = self._model.backbone(x)
+            feats = feats.mean(dim=2).transpose(1, 2)
+            feats = self._model.temporal(feats)
+            base_embedding = feats.mean(dim=1)               # (1, 256)
+            adapted = self._site_adapter(base_embedding)     # (1, 256)
+            evidence_t = self._model.vessel_head(adapted)[0]
+            vessel_type_logits_t = self._model.type_head(base_embedding)
+            distance_logits_t = self._model.distance_head(base_embedding)
+            out = {
+                "evidence": evidence_t.unsqueeze(0),
+                "vessel_type": vessel_type_logits_t,
+                "distance": distance_logits_t,
+                "embedding": adapted,
+            }
+            evidence = evidence_t
+            embedding_for_output = adapted[0]
+
         alpha = F.softplus(evidence) + 1.0
         S = alpha.sum()
         probs = alpha / S

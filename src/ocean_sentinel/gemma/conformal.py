@@ -113,6 +113,16 @@ def calibrate_conformal_real(
     except FileNotFoundError:
         return {"ok": False, "error": f"checkpoint not found: {checkpoint}"}
 
+    # If this site has a trained adapter (from Step 4), use the SAME
+    # adapted CNN for calibration as we'll use at inference. Otherwise
+    # we'd calibrate the threshold on the un-adapted ship_prob distribution
+    # but score events with the adapted distribution — misaligned.
+    adapter_path = Path("data/sites") / site_id / "adapter.pt"
+    if adapter_path.exists():
+        clf.set_site_adapter(adapter_path)
+    else:
+        clf.set_site_adapter(None)
+
     ship_probs: list[float] = []
     uncertainties: list[float] = []
     for s in starts:

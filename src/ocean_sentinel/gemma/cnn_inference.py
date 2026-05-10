@@ -44,6 +44,19 @@ def _load_classifier(checkpoint: str):
     return CNNV7Classifier(checkpoint)
 
 
+def _set_site_adapter_if_present(classifier, site_id: str) -> str | None:
+    """If data/sites/{site_id}/adapter.pt exists, load it onto the
+    classifier; otherwise clear any previously-set adapter. Returns the
+    path string when loaded, None otherwise.
+    """
+    candidate = Path("data/sites") / site_id / "adapter.pt"
+    if candidate.exists():
+        classifier.set_site_adapter(candidate)
+        return str(candidate)
+    classifier.set_site_adapter(None)
+    return None
+
+
 @lru_cache(maxsize=2)
 def _load_conformal(path: str) -> dict[str, Any]:
     return json.loads(Path(path).read_text())
@@ -113,6 +126,9 @@ def simulate_detection(
     except FileNotFoundError:
         return {"ok": False, "error": f"checkpoint not found: {checkpoint}"}
 
+    # If this site has a trained adapter, splice it in for this prediction.
+    site_adapter_path = _set_site_adapter_if_present(classifier, site_id)
+
     try:
         conformal = _load_conformal(conformal_path)
     except FileNotFoundError:
@@ -151,6 +167,7 @@ def simulate_detection(
         "decision_tier": tier,
         "severity": severity,
         "checkpoint": checkpoint,
+        "site_adapter": site_adapter_path,
         "summary": (
             f"{tier} ({severity}) · CNN p={ship_prob:.2f} "
             f"vs conformal {threshold:.2f} · AIS {ais_vessels_in_radius}"
