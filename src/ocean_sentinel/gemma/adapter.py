@@ -47,6 +47,48 @@ def _get_classifier(checkpoint: str):
     return CNNV7Classifier(checkpoint)
 
 
+def assessment_from_val_acc(val_acc: float) -> tuple[str, str]:
+    """Map label-free val_acc on ambient to a (assessment, recommendation)
+    pair. Display-only — never fed back into the model.
+
+    val_acc here is "share of windows that the base CNN classified as
+    not_ship". On a clean ambient, that should be near 1.0; if the user
+    site is acoustically out-of-distribution the CNN can hallucinate
+    ships and val_acc collapses, surfacing the OOD failure to the user
+    BEFORE conformal calibration silently absorbs it into the threshold.
+
+    Thresholds are heuristic (no LOHO study yet at this granularity) but
+    documented and testable. They mirror the categories we use elsewhere
+    in the system: validated / marginal / ood_confusion.
+    """
+    if val_acc >= 0.85:
+        return (
+            "model_validated",
+            "Base CNN classifies your ambient correctly — calibration "
+            "will tune the threshold for your false-alarm spec, and "
+            "per-event accuracy should be similar to held-out training "
+            "sites.",
+        )
+    if val_acc >= 0.5:
+        return (
+            "marginal",
+            "Base CNN is uncertain on your ambient — calibration will "
+            "compensate at the threshold level, but events near the "
+            "threshold should be flagged for human review until the "
+            "system has accumulated some per-site confirmations.",
+        )
+    return (
+        "ood_confusion",
+        "Base CNN classifies most of your ambient as 'ship' — either "
+        "your audio actually contains many vessels, or your site is "
+        "acoustically out-of-distribution. Conformal calibration in "
+        "Step 5 will raise the threshold to keep false-alarm rate at "
+        "spec, but PER-EVENT accuracy on this site cannot be verified "
+        "without labelled events. We recommend reviewing the first "
+        "~10 alerts manually before trusting unattended operation.",
+    )
+
+
 def _make_spec(y: np.ndarray, sr: int) -> np.ndarray:
     mel = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128, fmax=1000)
     return librosa.power_to_db(mel, ref=1.0)
@@ -110,6 +152,8 @@ def validate_adapter_on_ambient(
         ', "n_windows": ' + str(n_windows) + '}\n'
     )
 
+    assessment, recommendation = assessment_from_val_acc(val_acc)
+
     return {
         "ok": True,
         "site_id": site_id,
@@ -117,9 +161,12 @@ def validate_adapter_on_ambient(
         "final_val_acc": round(val_acc, 4),
         "mean_confidence": round(float(np.mean(confs)), 3),
         "mean_uncertainty": round(float(np.mean(uncs)), 3),
+        "assessment": assessment,
+        "recommendation": recommendation,
         "checkpoint": checkpoint,
         "summary": (
             f"v7.4 base validates on your ambient: {val_acc * 100:.1f}% "
-            f"correctly classified as not_ship across {n_windows} windows"
+            f"correctly classified as not_ship across {n_windows} "
+            f"windows · assessment={assessment}"
         ),
     }

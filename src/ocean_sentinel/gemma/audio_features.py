@@ -36,21 +36,62 @@ _N_FFT = 4096
 _DEFAULT_DURATION_S = 300.0
 
 
-def _classify_ambient(dominant_hz: float, median_db: float) -> str:
-    """Heuristic ambient class from the dominant band. Display-only — never
-    fed back to the model. Gemma uses this to narrate.
+def _classify_ambient(
+    mel_db_full: np.ndarray,
+    mel_freqs: np.ndarray,
+) -> tuple[str, dict[str, float]]:
+    """Heuristic ambient class from the multi-band time-frequency surface.
 
-    Thresholds based on Wenz 1962 and Hildebrand 2009 ocean acoustics
-    literature. Will be moved to data/calibration/site_classification.yaml
-    in the empirical-validation pass.
+    Display-only — never fed back to the model. Gemma uses this to narrate.
+
+    The earlier version used only the dominant median band and would
+    misclassify dense-transient sites (coral reef snapping shrimp) as
+    "vessel band" because the median across time picks up the steady
+    fish chorus and not the clicks. We now look at:
+
+      - dominant frequency of the per-band median (steady background)
+      - the gap between the per-band 95th percentile and the median in
+        the high-frequency bands (>1500 Hz). A gap > ~15 dB indicates
+        dense, sharp transient activity — the visual signature of
+        snapping shrimp on a tropical reef.
+
+    Both signals are returned alongside the label so the caller can
+    persist them for the Step 3 OOD diagnostic.
+
+    Thresholds based on Wenz 1962 / Hildebrand 2009 plus our own
+    synthetic-reef calibration (scripts/test_drastically_different_site.py).
     """
+    median = np.median(mel_db_full, axis=1)
+    p95 = np.percentile(mel_db_full, 95, axis=1)
+
+    high_band_mask = mel_freqs > 1500
+    if high_band_mask.any():
+        transient_gap_hf_db = float(
+            (p95[high_band_mask] - median[high_band_mask]).mean()
+        )
+    else:
+        transient_gap_hf_db = 0.0
+
+    dominant_idx = int(np.argmax(median))
+    dominant_hz = float(mel_freqs[dominant_idx])
+
+    features = {
+        "transient_gap_hf_db": round(transient_gap_hf_db, 2),
+        "dominant_hz": round(dominant_hz, 1),
+    }
+
+    # Reef / dense-click ambient first: high-band transient activity wins
+    # over whatever the steady median says.
+    if transient_gap_hf_db > 15.0:
+        return "biological · transient-rich (HF clicks)", features
+
     if dominant_hz < 80:
-        return "infrasound · deep-water"
+        return "infrasound · deep-water", features
     if dominant_hz < 500:
-        return "low-frequency · vessel band"
+        return "low-frequency · vessel band", features
     if dominant_hz < 2000:
-        return "mid-frequency · mixed"
-    return "high-frequency · biological"
+        return "mid-frequency · mixed", features
+    return "high-frequency · biological", features
 
 
 def _format_band(mel_freqs: np.ndarray, idx: int, span: int = 2) -> str:
@@ -103,13 +144,16 @@ def compute_spectral_signature(
     signature = np.median(mel_db, axis=1)
     median_psd = float(np.median(signature))
 
-    dominant_idx = int(np.argmax(signature))
     mel_freqs = librosa.mel_frequencies(
         n_mels=n_mels, fmin=_FMIN_HZ, fmax=min(_FMAX_HZ, sr // 2),
     )
+    ambient_class, class_features = _classify_ambient(mel_db, mel_freqs)
+
+    dominant_idx = int(np.argmax(signature))
     dominant_freq_hz = float(mel_freqs[dominant_idx])
     dominant_band_str = _format_band(mel_freqs, dominant_idx)
-    ambient_class = _classify_ambient(dominant_freq_hz, median_psd)
+
+    snapping_shrimp = ambient_class.startswith("biological · transient-rich")
 
     return {
         "ok": True,
@@ -119,9 +163,10 @@ def compute_spectral_signature(
         "dominant_band_hz": dominant_band_str,
         "dominant_freq_hz": round(dominant_freq_hz, 1),
         "ambient_class": ambient_class,
+        "transient_gap_hf_db": class_features["transient_gap_hf_db"],
         "duration_loaded_s": round(float(len(y) / sr), 1),
         "sample_rate_hz": int(sr),
-        "snapping_shrimp": False,
+        "snapping_shrimp": snapping_shrimp,
         "summary": (
             f"dominant {dominant_band_str} · {ambient_class} · "
             f"median {median_psd:.1f} dB"

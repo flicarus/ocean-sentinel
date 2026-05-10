@@ -286,6 +286,8 @@ def _extract_step4(ev: Any, ctx: OnboardingContext) -> None:
     if ev.name == "finetune_adapter":
         ctx.adapter_val_acc = r.get("final_val_acc")
         ctx.adapter_checkpoint = r.get("checkpoint")
+        ctx.adapter_assessment = r.get("assessment")
+        ctx.adapter_recommendation = r.get("recommendation")
 
 
 # ── Step 5: Conformal calibration ───────────────────────────────────────

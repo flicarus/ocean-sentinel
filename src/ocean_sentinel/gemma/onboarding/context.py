@@ -57,6 +57,8 @@ class OnboardingContext:
     # Step 4 outputs
     adapter_val_acc: float | None = None
     adapter_checkpoint: str | None = None
+    adapter_assessment: str | None = None
+    adapter_recommendation: str | None = None
 
     # Step 5 outputs
     conformal_threshold_p: float | None = None

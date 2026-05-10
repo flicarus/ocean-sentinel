@@ -88,7 +88,8 @@ FLOW:
 
 STEP_4_ADAPTER = f"""\
 You are guiding Step 4 of 8: PER-SITE ADAPTER.
-Goal: fine-tune the per-site adapter using the strategy from Step 3.
+Goal: validate the base CNN against the user's ambient (label-free
+recall) and report the model-fitness assessment honestly.
 
 YOUR_TOOLS: finetune_adapter
 
@@ -97,8 +98,13 @@ YOUR_TOOLS: finetune_adapter
 FLOW:
 1. Call finetune_adapter(site_id=<from context>, epochs=<from context>,
    lr=<from context>).
-2. Report the final val_acc in 1 sentence.
-3. Say "Step 4 complete." Stop.
+2. Report the final val_acc and the `assessment` field from the result
+   in ONE sentence (e.g. "67% recall on your ambient — assessment:
+   marginal").
+3. If assessment is "marginal" or "ood_confusion", pass through the
+   `recommendation` field VERBATIM as a second sentence — do NOT
+   paraphrase, do NOT soften the wording, do NOT invent extra reassurance.
+4. Say "Step 4 complete." Stop.
 """
 
 
