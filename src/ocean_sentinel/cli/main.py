@@ -1,16 +1,16 @@
 """Ocean Sentinel CLI — `os` entrypoint.
 
-`os onboard`          → live Gemma function-calling onboarding via Ollama
-`os onboard --demo`   → scripted walkthrough with mocked tools (offline-safe)
-`os refresh <site>`   → re-fit adapter + recalibrate threshold on
-                        accumulated ambient
-`os test <site>`      → run bundled known-label samples through the
-                        calibrated pipeline — proof the system isn't
-                        a mock
+`os onboard`                  → live Gemma function-calling onboarding via Ollama
+`os onboard --demo`           → scripted walkthrough with mocked tools (offline-safe)
+`os refresh <site>`           → re-fit adapter + recalibrate on accumulated ambient
+`os test <site>`              → run bundled known-label samples
+`os monitor <site> --watch …` → operational mode: watch a folder, alert on each new clip
+`os monitor <site> --replay …`→ one-shot: process every clip in a folder, exit
 """
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import httpx
 import typer
@@ -50,6 +50,141 @@ app = typer.Typer(
 def _root() -> None:
     """Multi-command shell. Forces Typer to keep subcommands as subcommands
     even when only one is registered (otherwise it collapses to direct call)."""
+
+
+@app.command()
+def monitor(
+    site_id: str = typer.Argument(..., help="Site identifier (kebab-case)."),
+    watch_dir: str | None = typer.Option(
+        None, "--watch", help="Directory to watch for new .wav files (continuous mode).",
+    ),
+    replay_dir: str | None = typer.Option(
+        None, "--replay", help="Directory to process once and exit (demo / batch mode).",
+    ),
+    interval: float = typer.Option(
+        2.0, "--interval", help="Seconds between watch polls.",
+    ),
+    verbose: bool = typer.Option(
+        False, "--verbose", help="Print every clip including AMBIENT decisions.",
+    ),
+) -> None:
+    """Operational mode for an onboarded hydrophone site.
+
+    Two modes:
+
+      --watch <dir>    poll for new .wav files, process each as it lands
+                       (use this for live deployment)
+      --replay <dir>   process every .wav once in mtime order, then exit
+                       (use this for demo / batch verification)
+
+    Each detection is appended to data/sites/<site>/events.jsonl which
+    the dashboard at /api/events/feed reads directly. Failures (corrupt
+    audio, unreadable file) are logged to errors.jsonl and don't
+    interrupt the loop.
+
+    If the site has not been onboarded, Gemma offers to run the Site
+    Onboarding Protocol first — without per-site calibration the alerts
+    would silently use the global threshold.
+    """
+    from .test_command import is_site_onboarded
+    from .monitor_command import replay, watch, _site_dir
+
+    if (watch_dir is None) == (replay_dir is None):
+        error("Specify exactly one of --watch <dir> or --replay <dir>.")
+        raise typer.Exit(1)
+
+    target_dir = Path(watch_dir or replay_dir)
+    if not target_dir.exists() or not target_dir.is_dir():
+        error(f"directory not found: {target_dir}")
+        raise typer.Exit(1)
+
+    show_banner()
+    console.print(f"  [grey50]site[/]   [bold]{site_id}[/]")
+    if watch_dir:
+        console.print(f"  [grey50]watch[/]  [bold]{watch_dir}[/]   "
+                      f"[grey50]poll[/] [bold]{interval:.1f}s[/]")
+    else:
+        console.print(f"  [grey50]replay[/] [bold]{replay_dir}[/]")
+    console.print()
+
+    if not is_site_onboarded(site_id):
+        gemma_say(
+            f"Site '{site_id}' isn't onboarded yet. Without a per-site "
+            f"adapter and threshold, alerts would use the global v7.4 "
+            f"calibration — accurate enough for distribution-typical "
+            f"sites but unreliable for anything OOD.\n\n"
+            f"The Site Onboarding Protocol is a short interactive "
+            f"walkthrough (about 5 minutes). Strongly recommended before "
+            f"running live monitoring."
+        )
+        if confirm(f"Run the Site Onboarding Protocol for '{site_id}' now?",
+                   default_yes=True):
+            err_check = _check_ollama(DEFAULT_HOST)
+            if err_check:
+                error(f"Cannot reach Ollama at {DEFAULT_HOST} — {err_check}")
+                warn("Onboarding requires `ollama serve` running with "
+                     f"{DEFAULT_MODEL} pulled.")
+                raise typer.Exit(1)
+            _run_live(model=DEFAULT_MODEL, host=DEFAULT_HOST)
+            if not is_site_onboarded(site_id):
+                warn(f"Onboarding did not complete; not starting monitor.")
+                raise typer.Exit(1)
+            console.print()
+            ok(f"site '{site_id}' onboarded — starting monitor...")
+            console.print()
+        else:
+            warn(
+                f"OK — onboarding skipped. Monitor will run with the "
+                f"global v7.4 threshold; alerts may be noisy. When you're "
+                f"ready: `os onboard`, then re-run this command."
+            )
+            console.print()
+
+    events_path = _site_dir(site_id) / "events.jsonl"
+
+    def _print_event(file: Path, event: dict | None) -> None:
+        if event is None:
+            console.print(f"  [red]✗[/] {file.name}  failed (see errors.jsonl)")
+            return
+        tier = event.get("decision_tier") or "—"
+        cnn_p = event.get("cnn_confidence") or 0.0
+        thresh = event.get("conformal_threshold") or 0.0
+        if tier in ("DARK_VESSEL", "CONFIRMED_VESSEL", "ACOUSTIC_ONLY_LOW"):
+            colour = {"HIGH": "red", "MEDIUM": "yellow", "LOW": "cyan"}.get(
+                event.get("severity", "LOW"), "cyan",
+            )
+            console.print(
+                f"  [{colour}]●[/] {file.name}  "
+                f"[bold]{tier}[/] ({event.get('severity', '—')}) · "
+                f"p={cnn_p:.2f} > {thresh:.2f}  "
+                f"[grey50]{event.get('id')}[/]"
+            )
+        elif tier == "AMBIENT":
+            if verbose:
+                console.print(
+                    f"  [grey50]·[/] {file.name}  AMBIENT  p={cnn_p:.2f} ≤ {thresh:.2f}"
+                )
+        else:  # UNCERTAIN
+            console.print(
+                f"  [yellow]?[/] {file.name}  {tier}  p={cnn_p:.2f}"
+            )
+
+    if replay_dir is not None:
+        events = replay(site_id=site_id, folder=target_dir, on_event=_print_event)
+        console.print()
+        ok(f"replayed {len(events)} clip(s) → {events_path}")
+        return
+
+    # Watch mode — runs until Ctrl-C
+    console.print(f"  [grey50]events →[/] [bold]{events_path}[/]")
+    console.print(f"  [grey50]Ctrl-C to stop[/]\n")
+    try:
+        for _ in watch(site_id=site_id, folder=target_dir,
+                       poll_interval_s=interval, on_event=_print_event):
+            pass
+    except KeyboardInterrupt:
+        console.print()
+        ok("monitor stopped")
 
 
 @app.command()

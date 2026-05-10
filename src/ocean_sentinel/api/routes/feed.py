@@ -273,6 +273,71 @@ def _materialize(seed: dict) -> VesselEvent:
     )
 
 
+def _read_live_events() -> list[VesselEvent]:
+    """Read every events.jsonl produced by `os monitor` and return them
+    newest-first as VesselEvent objects.
+
+    Each event row was already shaped to match the VesselEvent schema by
+    monitor_command._to_vessel_event. Here we recompute time_ago and
+    ais_offline_since from the persisted ts so the feed never goes stale,
+    and skip any rows that don't have the minimum fields.
+    """
+    import json
+    from datetime import datetime
+    from pathlib import Path
+
+    base = Path("data/sites")
+    if not base.exists():
+        return []
+
+    rows: list[tuple[datetime, dict]] = []
+    for events_path in base.glob("*/events.jsonl"):
+        try:
+            for line in events_path.read_text().splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                ts_str = row.get("ts")
+                if not ts_str:
+                    continue
+                try:
+                    ts = datetime.fromisoformat(ts_str)
+                except Exception:
+                    continue
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                rows.append((ts, row))
+        except Exception:
+            continue
+
+    rows.sort(key=lambda pair: pair[0], reverse=True)
+
+    out: list[VesselEvent] = []
+    now = datetime.now(timezone.utc)
+    for ts, row in rows:
+        seconds_ago = max(0, int((now - ts).total_seconds()))
+        try:
+            out.append(VesselEvent(
+                id=str(row.get("id") or row.get("decision_id") or "DET-?"),
+                vessel=str(row.get("vessel") or "unknown"),
+                lat=float(row.get("lat", 0.0) or 0.0),
+                lng=float(row.get("lng", 0.0) or 0.0),
+                threat=row.get("threat", "LOW"),
+                confidence=float(row.get("confidence", 0.0) or 0.0),
+                ais_offline_since=ts.isoformat(),
+                hydrophone=str(row.get("hydrophone") or row.get("site_id") or "—"),
+                time_ago=_humanize_seconds(seconds_ago),
+                mpa_name=str(row.get("mpa_name") or "—"),
+                mpa_distance_km=float(row.get("mpa_distance_km", 0.0) or 0.0),
+                gemma_reasoning=str(row.get("gemma_reasoning") or "—"),
+                vessel_window=str(row.get("vessel_window") or "—"),
+                cnn_analysis=str(row.get("cnn_analysis") or "—"),
+            ))
+        except Exception:
+            continue
+    return out
+
+
 @router.get("/feed", response_model=list[VesselEvent])
 async def feed(
     threat: Literal["HIGH", "MEDIUM", "LOW", "ALL"] = Query(default="ALL"),
@@ -280,23 +345,15 @@ async def feed(
 ):
     """Return the dashboard feed in `VesselEvent` shape.
 
-    Frontend `useEvents.ts` polls this every 10 s. The seeds give a
-    cohesive narrative the dashboard always has data to render; once
-    we wire `_from_detection` (TODO) to the SQLite event store, this
-    endpoint will fall back to seeds only when the store is empty.
+    Live events from `os monitor` (data/sites/*/events.jsonl) come first,
+    newest first. The curated seeds are always appended afterwards so
+    the dashboard renders something cohesive even before the user has
+    deployed any monitor instances. Filtering by threat and trimming to
+    `limit` happens last.
     """
-    items = [_materialize(s) for s in _SEED]
+    live = _read_live_events()
+    seeds = [_materialize(s) for s in _SEED]
+    items = live + seeds
     if threat != "ALL":
         items = [e for e in items if e.threat == threat]
     return items[:limit]
-
-
-# ── For when we wire to the live event store ────────────────────────────
-# Sketch — left here to make the future work obvious. The DetectionEvent
-# domain object in our store has location/timestamp/threat_level/confidence.
-# The remaining VesselEvent fields (gemma_reasoning, vessel_window,
-# cnn_analysis) need to be populated either by the decision engine when
-# it logs the detection, or by a small enrichment pass.
-#
-# def _from_detection(event: DetectionEvent) -> VesselEvent:
-#     ...
