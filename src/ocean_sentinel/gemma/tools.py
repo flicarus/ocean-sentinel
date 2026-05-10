@@ -334,23 +334,21 @@ def _simulate_detection_legacy(site_id: str, clip: str) -> dict[str, Any]:
     }
 
 
-# ── 13. explain_decision ────────────────────────────────────────────────
-def _explain_decision(decision_id: str, modality: str = "text") -> dict[str, Any]:
-    # In real impl, this calls Gemma multimodal with spectrogram + text trace.
-    # Here we return structured trace; agent.py composes the narration.
-    return {
-        "ok": True,
-        "decision_id": decision_id,
-        "modality": modality,
-        "trace": {
-            "blade_rate_hz": 2.4,
-            "harmonics": [80, 160, 240, 320],
-            "snr_db_above_ambient": 18.0,
-            "duration_s": 60.0,
-            "spectrogram_path": f"data/decisions/{decision_id}.png",
-        },
-        "summary": "blade-rate 2.4Hz · 18dB above ambient · trawl-class signature",
-    }
+# ── 13. explain_decision  [REAL — Gemma multimodal on spectrogram] ─────
+def _explain_decision(decision_id: str, modality: str = "spectrogram+text") -> dict[str, Any]:
+    """Real impl — see ocean_sentinel.gemma.explanations.
+
+    Reads the decision record persisted by simulate_detection, renders the
+    clip's log-mel spectrogram, computes real spectral features, and asks
+    Gemma 4 multimodal for a 1-2 sentence operator-friendly explanation
+    grounded in the image. Falls back to a templated narration (still using
+    real measured features) if Ollama is unreachable."""
+    from .explanations import explain_decision_real, is_multimodal_disabled
+    return explain_decision_real(
+        decision_id=decision_id,
+        modality=modality,
+        use_multimodal=not is_multimodal_disabled(),
+    )
 
 
 # ── 14. flag_for_review ─────────────────────────────────────────────────
@@ -535,12 +533,12 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="explain_decision",
-        description="Pull the multimodal trace for a past decision (spectrogram, blade-rate, harmonics, SNR). Use after simulate_detection.",
+        description="Explain a past decision: render the clip's spectrogram and ask Gemma 4 multimodal for a short, grounded narration. Returns real spectral features (peak Hz, centroid, low-band energy) plus a 1-2 sentence explanation.",
         parameters={
             "type": "object",
             "properties": {
-                "decision_id": {"type": "string"},
-                "modality":    {"type": "string", "enum": ["text", "spectrogram", "spectrogram+text"], "default": "text"},
+                "decision_id": {"type": "string", "description": "decision_id returned by simulate_detection"},
+                "modality":    {"type": "string", "enum": ["text", "spectrogram", "spectrogram+text"], "default": "spectrogram+text"},
             },
             "required": ["decision_id"],
         },

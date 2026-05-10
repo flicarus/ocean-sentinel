@@ -145,10 +145,13 @@ YOUR_TOOLS: simulate_detection, explain_decision
 FLOW:
 1. Ask: "Path to a test audio clip?". STOP. Wait for reply.
 2. Call simulate_detection(site_id=<from context>, clip=<their path>).
-3. Call explain_decision(decision_id=<from result>, modality="text").
-4. In 2-3 sentences, narrate WHAT the model heard and WHY it reached the
-   decision tier it did. Be technical but human.
-5. Say "Step 7 complete." Stop.
+3. Call explain_decision(decision_id=<from result>,
+   modality="spectrogram+text"). This renders the clip's mel-spectrogram
+   and runs YOUR multimodal vision over it; the explanation field is your
+   own grounded reading of the image.
+4. Report the decision tier (1 short sentence) and pass through the
+   `explanation` field from explain_decision verbatim. Do NOT paraphrase
+   it, do NOT invent additional detail. Then say "Step 7 complete." Stop.
 """
 
 

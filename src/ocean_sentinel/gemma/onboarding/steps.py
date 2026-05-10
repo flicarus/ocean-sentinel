@@ -397,8 +397,10 @@ class Step7Test(Step):
         agent.user(
             f"Please call simulate_detection(site_id='{ctx.site_id}', "
             f"clip='{clip}'). Then call explain_decision with the returned "
-            f"decision_id and modality='text'. Finally narrate WHAT the model "
-            f"heard and WHY it reached the decision tier, in 2-3 sentences."
+            f"decision_id and modality='spectrogram+text' (this renders the "
+            f"clip's spectrogram and runs your own multimodal vision over it). "
+            f"Pass through the explanation field verbatim — do not paraphrase "
+            f"or add invented details."
         )
         if not _drive_turn(agent, ui, ctx, _extract_step7):
             return StepResult(StepStatus.NEEDS_RETRY)

@@ -136,10 +136,11 @@ def simulate_detection(
 
     decision_id = f"DET-{abs(hash(clip + site_id)) % 100000:05d}"
 
-    return {
+    record = {
         "ok": True,
         "decision_id": decision_id,
         "site_id": site_id,
+        "clip": str(clip_path),
         "cnn_label": label,
         "cnn_confidence": round(ship_prob, 3),
         "cnn_uncertainty": round(uncertainty, 3),
@@ -155,3 +156,11 @@ def simulate_detection(
             f"vs conformal {threshold:.2f} · AIS {ais_vessels_in_radius}"
         ),
     }
+
+    try:
+        from .explanations import write_decision_record
+        write_decision_record(decision_id, record)
+    except Exception:
+        pass
+
+    return record
