@@ -120,6 +120,51 @@ Optional for future week:
 
 ---
 
+## `os` CLI — try the model without spinning up the stack
+
+After `pip install -e .` the `os` command is on your PATH. Six commands,
+each covers a real user need:
+
+```bash
+os info             # show deployed model + per-site thresholds + eval scores
+os bench            # measure inference latency on this machine
+os detect <wav>     # classify one audio file (--site for per-site threshold)
+os test <site>      # bundled known-label samples through full pipeline
+os monitor <site>   # operational watch-folder mode
+os onboard          # walk through site onboarding with Gemma
+```
+
+### Verify install
+```bash
+os info
+```
+Prints: model checkpoint + size, inference device (mps/cuda/cpu),
+conformal threshold, all per-site thresholds (sorted), eval results
+from `data/eval/`, calibrated latency.
+
+### Reproduce the performance claim
+```bash
+os bench
+# real-time   : 12 500× (60s clip → 4.80ms)
+# throughput  : 208 clips/sec sustained
+```
+
+### Single-file detection
+```bash
+os detect path/to/clip.wav --site point-robinson --ais 0
+```
+Output: ship_prob bar, active threshold (per-site if `--site` matches),
+uncertainty, decision tier (`DARK_VESSEL` / `CONFIRMED_VESSEL` /
+`AMBIENT` / …), end-to-end latency. Add `--json` to pipe into other
+tools.
+
+The per-site threshold layer is what makes v7.6 hit **96.4 % on held-out
+test** and **96.0 % on 8 sites × fresh dates** (out-of-distribution).
+See [`docs/findings_per_site_calibration.md`](docs/findings_per_site_calibration.md)
+for the discovery → fix → OOD-validation writeup.
+
+---
+
 ## Useful one-liners
 
 ### Test the CNN model loads + forward pass works
