@@ -32,16 +32,27 @@ _TARGET_SR_HZ = 16_000
 _N_MELS = 128
 _FMAX_HZ = 1_000          # CNN v7 was trained with fmax=1kHz (low-band focus)
 _DEFAULT_DURATION_S = 60.0  # CNN v7 expects ~60s windows
-_DEFAULT_CHECKPOINT = "data/models/cnn_v7_4.pt"
-_DEFAULT_CONFORMAL = "data/calibration/conformal_v7_4.json"
+_DEFAULT_CHECKPOINT = "data/models/cnn_v7_6.pt"
+_DEFAULT_CONFORMAL = "data/calibration/conformal_v7_6.json"
+_DEFAULT_SITE_THRESHOLDS = "data/calibration/per_site_thresholds_v7_6.json"
 
 
 @lru_cache(maxsize=2)
 def _load_classifier(checkpoint: str):
     """Load the v7 classifier once per process. Cached because instantiation
-    is heavy (model + weights + MPS device move)."""
+    is heavy (model + weights + MPS device move).
+
+    Auto-loads per-site thresholds from the default path when present —
+    these correct balanced-sampler under-weighting for class-skewed sites
+    (mbari, sanctsound, etc.). Falls back silently to default 0.5 when the
+    calibration file is missing.
+    """
     from ocean_sentinel.services.cnn_v7_classifier import CNNV7Classifier
-    return CNNV7Classifier(checkpoint)
+    clf = CNNV7Classifier(checkpoint)
+    thresholds_path = Path(_DEFAULT_SITE_THRESHOLDS)
+    if thresholds_path.exists():
+        clf.set_site_thresholds(thresholds_path)
+    return clf
 
 
 def _set_site_adapter_if_present(classifier, site_id: str) -> str | None:
