@@ -125,15 +125,22 @@ class CNNV7Classifier:
     def _threshold_for(self, source_id: str | None) -> float:
         """Pick the active decision threshold (default 0.5).
 
-        Tries exact match first; for SanctSound source_ids the eval splitter
-        uses the final segment (e.g. 'sanctsound-corrected-oc01' → 'oc01'),
-        so we also try that suffix.
+        Tries a few naming conventions to be ergonomic:
+        - Exact match: 'ais-correlated-point-robinson' → that key
+        - 'ais-correlated-' prefix: 'point-robinson' → 'ais-correlated-point-robinson'
+        - SanctSound suffix: 'sanctsound-corrected-oc01' → 'oc01'
+        - Bare hydrophone name (sanctsound deployments): 'oc01' → 'oc01'
         """
         if not source_id or not self._site_thresholds:
             return 0.5
+        # 1. Exact
         if source_id in self._site_thresholds:
             return self._site_thresholds[source_id]
-        # Try the SanctSound suffix convention
+        # 2. ais-correlated- prefix: caller passed 'point-robinson'
+        prefixed = f"ais-correlated-{source_id}"
+        if prefixed in self._site_thresholds:
+            return self._site_thresholds[prefixed]
+        # 3. SanctSound suffix: caller passed 'sanctsound-corrected-oc01'
         if "-" in source_id:
             tail = source_id.rsplit("-", 1)[-1]
             if tail in self._site_thresholds:

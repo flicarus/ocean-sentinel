@@ -1,0 +1,197 @@
+"""`os detect <audio.wav>` — single-file detection.
+
+The fastest way to verify the system works. Drop a .wav (or any audio
+librosa can read) at this command and you get the full pipeline output:
+ship_prob, decision tier, latency. Optionally take a `--site` flag to
+apply the per-site calibrated threshold for that hydrophone.
+
+Designed for two audiences:
+- A new operator wanting to sanity-check after install ("does the model
+  even load on my hardware?")
+- A judge / reviewer wanting a single-command demo without spinning up
+  the watch-folder or the dashboard.
+
+Output is human-readable to stdout. --json flips to a machine-readable
+single-line JSON for piping into other tools.
+"""
+from __future__ import annotations
+
+import json
+import sys
+import time
+from pathlib import Path
+
+import librosa
+import numpy as np
+import typer
+
+
+_TIER_COLOUR = {
+    "DARK_VESSEL":       "bold red",
+    "CONFIRMED_VESSEL":  "yellow",
+    "ACOUSTIC_ONLY_LOW": "yellow",
+    "AMBIENT":           "green",
+    "UNCERTAIN":         "dim",
+}
+
+_TARGET_SR_HZ = 16_000
+_DEFAULT_DURATION_S = 60.0
+_N_MELS = 128
+_FMAX_HZ = 1_000
+
+
+def _format_prob(p: float) -> str:
+    bar_len = 20
+    filled = int(round(p * bar_len))
+    bar = "█" * filled + "░" * (bar_len - filled)
+    return f"{bar} {p:.3f}"
+
+
+def _decide_tier(
+    ship_prob: float,
+    threshold: float,
+    uncertainty: float,
+    ais_in_radius: int,
+) -> tuple[str, str]:
+    """Map raw outputs to (decision_tier, severity).
+
+    Mirrors gemma.cnn_inference._decide_tier but uses the per-site
+    threshold passed in rather than the global conformal one. Order
+    matters: abstention check first, then ambient, then the AIS-vs-
+    no-AIS bifurcation that separates dark vessels from confirmed.
+    """
+    UNCERTAINTY_MAX = 0.25
+    if uncertainty > UNCERTAINTY_MAX:
+        return "UNCERTAIN", "MEDIUM"
+    if ship_prob < threshold:
+        return "AMBIENT", "NONE"
+    if ais_in_radius == 0 and ship_prob >= 0.85:
+        return "DARK_VESSEL", "HIGH"
+    if ais_in_radius >= 1 and ship_prob >= 0.65:
+        return "CONFIRMED_VESSEL", "LOW"
+    return "ACOUSTIC_ONLY_LOW", "MEDIUM"
+
+
+def detect_command(
+    audio: str = typer.Argument(..., help="Path to a .wav (or anything librosa loads)."),
+    site: str | None = typer.Option(
+        None, "--site", "-s",
+        help="Hydrophone site_id for per-site threshold calibration. "
+             "If omitted, the global default 0.5 is used.",
+    ),
+    ais_radius: int = typer.Option(
+        0, "--ais",
+        help="Number of AIS-registered vessels currently in radius. "
+             "Drives DARK_VESSEL vs CONFIRMED_VESSEL classification.",
+    ),
+    as_json: bool = typer.Option(
+        False, "--json",
+        help="Emit a single-line JSON record instead of human-readable output.",
+    ),
+) -> None:
+    """Run the v7.6 + calibration pipeline on a single audio file.
+
+    Examples:
+
+        os detect my_clip.wav
+        os detect my_clip.wav --site point-robinson --ais 0
+        os detect my_clip.wav --json | jq .ship_prob
+    """
+    from ..gemma.cnn_inference import _load_classifier, _DEFAULT_CHECKPOINT
+    from .ui import console, fail, ok
+
+    path = Path(audio)
+    if not path.exists():
+        fail(f"Audio file not found: {audio}")
+        raise typer.Exit(code=2)
+
+    try:
+        duration = librosa.get_duration(path=str(path))
+    except Exception as e:
+        fail(f"Could not read audio file: {type(e).__name__}: {e}")
+        raise typer.Exit(code=2)
+
+    if duration < 1.0:
+        fail(f"Clip is {duration:.2f}s; need at least 1s.")
+        raise typer.Exit(code=2)
+
+    # Load audio + make spectrogram (matches training preprocessing exactly).
+    t0 = time.perf_counter()
+    try:
+        y, sr = librosa.load(
+            str(path), sr=_TARGET_SR_HZ, mono=True,
+            duration=_DEFAULT_DURATION_S,
+        )
+        mel = librosa.feature.melspectrogram(
+            y=y, sr=sr, n_mels=_N_MELS, fmax=_FMAX_HZ,
+        )
+        spec = librosa.power_to_db(mel, ref=1.0)
+    except Exception as e:
+        fail(f"Audio preprocessing failed: {type(e).__name__}: {e}")
+        raise typer.Exit(code=1)
+
+    # Load classifier (cached) — auto-loads per-site thresholds.
+    classifier = _load_classifier(_DEFAULT_CHECKPOINT)
+
+    # Predict with site context — this applies the per-site threshold
+    # to the `label` decision. We still inspect ship_prob to surface
+    # to the user.
+    pred = classifier.predict(spec, source_id=site)
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+    ship_prob = float(pred["probabilities"]["ship"])
+    uncertainty = float(pred["uncertainty"])
+
+    # Active threshold for this detection — the per-site one if loaded,
+    # else 0.5. Stay in sync with the classifier's internal lookup so
+    # the tier we report matches its `label`.
+    threshold = classifier._threshold_for(site)  # internal-but-stable
+    tier, severity = _decide_tier(ship_prob, threshold, uncertainty, ais_radius)
+
+    if as_json:
+        out = {
+            "audio": str(path),
+            "duration_s": round(duration, 2),
+            "site_id": site,
+            "ais_vessels_in_radius": ais_radius,
+            "ship_prob": round(ship_prob, 4),
+            "label": pred["label"],
+            "decision_tier": tier,
+            "severity": severity,
+            "uncertainty": round(uncertainty, 4),
+            "active_threshold": round(threshold, 4),
+            "threshold_source": "per-site" if threshold != 0.5 else "default",
+            "pipeline_ms": round(elapsed_ms, 1),
+            "model": _DEFAULT_CHECKPOINT,
+        }
+        print(json.dumps(out))
+        return
+
+    colour = _TIER_COLOUR.get(tier, "white")
+    console.rule("[bold]Ocean Sentinel · detection")
+    console.print(f"  file       : [bold]{path.name}[/bold]  ({duration:.1f}s)")
+    if site:
+        thr_note = "per-site calibration" if threshold != 0.5 else "no calibration for this site → default"
+        console.print(f"  site       : {site}  ({thr_note})")
+    else:
+        console.print(f"  site       : (none) — default 0.5 threshold")
+    console.print(f"  AIS in rng : {ais_radius}")
+    console.print()
+    console.print(f"  ship_prob  : {_format_prob(ship_prob)}")
+    console.print(f"  threshold  : {threshold:.3f}  ({'PASS' if ship_prob >= threshold else 'fail'})")
+    console.print(f"  uncertainty: {uncertainty:.3f}  (abstain if >0.25)")
+    console.print()
+    console.print(f"  → tier     : [{colour}]{tier}[/{colour}]  ({severity})")
+    console.print(f"  → latency  : {elapsed_ms:.1f} ms end-to-end (load + mel + CNN)")
+    console.print()
+
+    if tier == "DARK_VESSEL":
+        ok("No AIS vessel in radius but ship signature confirmed. Investigate.")
+    elif tier == "CONFIRMED_VESSEL":
+        console.print("[yellow]AIS reports a vessel in radius; CNN confirms the acoustic signature.[/yellow]")
+    elif tier == "ACOUSTIC_ONLY_LOW":
+        console.print("[dim]Some ship signature, but below confident-detection threshold.[/dim]")
+    elif tier == "AMBIENT":
+        console.print("[green]No vessel detected.[/green]")
+    elif tier == "UNCERTAIN":
+        console.print("[dim]Model abstained — uncertainty above 0.25 means insufficient evidence either way.[/dim]")

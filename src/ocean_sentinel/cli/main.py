@@ -52,6 +52,21 @@ def _root() -> None:
     even when only one is registered (otherwise it collapses to direct call)."""
 
 
+# Single-file detection — the fastest "does this work?" command. Defined
+# in its own module so the heavy librosa/torch imports stay out of the
+# CLI startup path until actually invoked.
+from .detect_command import detect_command  # noqa: E402
+app.command(name="detect")(detect_command)
+
+# Status command — show what's deployed at a glance.
+from .info_command import info_command  # noqa: E402
+app.command(name="info")(info_command)
+
+# Latency benchmark — reproducible perf claim per-machine.
+from .bench_command import bench_command  # noqa: E402
+app.command(name="bench")(bench_command)
+
+
 @app.command()
 def monitor(
     site_id: str = typer.Argument(..., help="Site identifier (kebab-case)."),
