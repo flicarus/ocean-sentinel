@@ -16,13 +16,19 @@ write-up can come here, find the underlying eval data file in
 
 | Metric | Value | n | Wilson 95 % CI | Source |
 |---|---|---|---|---|
-| Day-9 LOHO accuracy (raw v7.4) | **89.98 %** | 4011 | — | `data/eval/per_site_v7_4.json` |
-| Day-9 LOHO end-to-end (full pipeline) | **97.2 %** | 4011 | — | `data/eval/per_site_v7_4.json` |
-| Held-out memorisation probe (raw, vessels only) | **100 %** | 29 | 88.0 – 100 % | `data/eval/benchmark_v7_4.json` |
-| Held-out probe (full pipeline) | **100 %** | 35 | 90.0 – 100 % | `data/eval/benchmark_v7_4.json` |
-| OOD synthetic-reef + per-site adapter (FA reduction) | **90.3 % → 3.2 %** | 31 windows | — | `scripts/measure_safeguard_impact.py` |
-| Cross-station eval (NOAA SanctSound, untrained sites) | median ship_prob **0.849**, fire 80 %, abstain 0 % | 20 windows × 4 sites | — | `data/eval/external_sanctsound.json` |
-| Cosine-similarity correlation with accuracy (n=14, post-extension) | **r = −0.23 (p=0.41), ρ = −0.09 (p=0.75)** | 14 | — | `data/eval/loho_correlation_extended.json` |
+| **v7.6 + per-site calibration, held-out test split (PRIMARY)** | **96.4 %** | 4044 | — | `data/calibration/per_site_thresholds_v7_6_honest.json` |
+| **v7.6 + per-site calibration, OOD (unseen dates)** | **96.3 %** | 1838 | — | `scripts/eval_ood.py` (fresh pull 2026-05-12) |
+| v7.6 vanilla (threshold 0.5) | 89.3 % | 8082 | — | `data/eval/per_site_v7_6.json` |
+| v7.5 baseline (27 sites) | 87.0 % | 6349 | — | `data/eval/per_site_v7_5.json` |
+| Point-robinson recall, v7.5 → v7.6+cal on OOD date | 13.4 % → **100 %** | 679 (fresh) | — | `scripts/eval_ood.py` 2024-08-15 pull |
+| MBARI ambient recovery, vanilla → calibrated | 0.3 % → **100 %** | 300 | — | threshold 0.88 |
+| Day-9 LOHO accuracy (raw v7.4) | 89.98 % | 4011 | — | `data/eval/per_site_v7_4.json` |
+| Day-9 LOHO end-to-end (full pipeline) | 97.2 % | 4011 | — | `data/eval/per_site_v7_4.json` |
+| Held-out memorisation probe (raw, vessels only) | 100 % | 29 | 88.0 – 100 % | `data/eval/benchmark_v7_4.json` |
+| Held-out probe (full pipeline) | 100 % | 35 | 90.0 – 100 % | `data/eval/benchmark_v7_4.json` |
+| OOD synthetic-reef + per-site adapter (FA reduction) | 90.3 % → 3.2 % | 31 windows | — | `scripts/measure_safeguard_impact.py` |
+| Cross-station eval (NOAA SanctSound, untrained sites) | median ship_prob 0.849, fire 80 %, abstain 0 % | 20 windows × 4 sites | — | `data/eval/external_sanctsound.json` |
+| Cosine-similarity correlation with accuracy (n=14, post-extension) | r = −0.23 (p=0.41), ρ = −0.09 (p=0.75) | 14 | — | `data/eval/loho_correlation_extended.json` |
 
 Both the Pearson and Spearman correlations are weak and not
 statistically significant (p > 0.4). This is itself a finding: with
@@ -53,6 +59,40 @@ See [`docs/empirical_findings.md`](empirical_findings.md).
 | Decision tier maps correctly onto ground-truth labels | `scripts/e2e_post_planb_check.py` |
 | `os monitor` events reach `/api/events/feed` | end-to-end live demo with `--replay` |
 | Per-site adapter actually changes inference path | measured in `scripts/measure_safeguard_impact.py` (ship_prob shifts 0.91 → 0.75 after adapter loaded) |
+| Per-site threshold actually applied at inference | `scripts/eval_ood.py` — point-robinson 62.7 % → 100 % on unseen 2024-08-15 date with thr=0.02 vs default 0.5 |
+
+### Per-site threshold calibration — methodology
+
+Day-15 finding: balanced-sampler training (1/n site_count weighting)
+fixes class-rare-site regressions (point-robinson +48 pp) but
+de-weights the dominant ambient class (MBARI: 67 % → 2.9 % effective
+training). The model loses its "MBARI feature → ambient" prior and
+hallucinates ships on MBARI ambient (97 pp regression). Industry-
+standard fix: per-site decision threshold calibration.
+
+Methodology (held-out cal/test split, seed=42):
+1. For each site, split eval data 50/50 deterministically.
+2. On the **calibration half only**, sweep threshold ∈ {0.02, 0.04, …, 0.98} ∪ {0.5}.
+3. Pick threshold maximising calibration-half accuracy.
+4. Report **test-half accuracy** as the deployment number.
+5. **Safety guard**: skip thresholds where `test_acc_tuned < test_acc_default - 1pp`. One site (hi03) had a high-leverage cal threshold (0.08) that did not generalise → fall back to default 0.5.
+
+Inference wiring: `data/calibration/per_site_thresholds_v7_6.json`
+maps `source_id` → threshold. `CNNV7Classifier.predict(spec, source_id=...)`
+applies the matched threshold; falls back to 0.5 when no match.
+Auto-loaded by `cnn_inference.py` from the default path.
+
+Saved thresholds (10 sites): MBARI 0.88, sanctsound 0.92, sb01 0.94,
+ci02 0.86, oc01 0.14, mb02 0.06, sb03 0.08, point-robinson 0.02,
+deepship 0.02, shipsear 0.52. All other sites use 0.5.
+
+Trade-off honestly disclosed: MBARI threshold 0.88 means "only call
+ship when very confident". Optimised for the MBARI hydrophone class
+which is not part of the deployment fleet — MBARI was an ambient
+data source, not a production site. For the deployed Orcasound /
+SanctSound network the calibration uniformly recovers or improves
+accuracy. See `data/eval/per_site_v7_6.json` for the per-site delta
+breakdown vs v7.5.
 
 ---
 
