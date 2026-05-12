@@ -74,6 +74,16 @@ app.command(name="doctor")(doctor_command)
 from .list_sites_command import list_sites_command  # noqa: E402
 app.command(name="list-sites")(list_sites_command)
 
+# Intelligence brief — Gemma 4 function-calling agent synthesises a
+# structured intelligence product. The Ocean Intelligence System showcase.
+from .brief_command import brief_command  # noqa: E402
+app.command(name="brief")(brief_command)
+
+# Vessel identification from natural photographs — Gemma 4 multimodal,
+# scope limited to images the model can actually read (no mel-specs).
+from .identify_vessel_command import identify_vessel_command  # noqa: E402
+app.command(name="identify-vessel")(identify_vessel_command)
+
 
 @app.command()
 def monitor(
