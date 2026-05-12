@@ -40,6 +40,38 @@ _N_MELS = 128
 _FMAX_HZ = 1_000
 
 
+def _complete_site(incomplete: str) -> list[str]:
+    """Shell completion for the --site flag.
+
+    Reads the loaded per-site thresholds JSON so the user can tab-complete
+    from the exact sites the calibration knows about. Falls back to a
+    static list of common hydrophones when the file is missing.
+    """
+    import json
+    from pathlib import Path
+
+    path = Path("data/calibration/per_site_thresholds_v7_6.json")
+    sites: list[str] = []
+    if path.exists():
+        try:
+            doc = json.loads(path.read_text())
+            sites = list((doc.get("per_site_thresholds") or {}).keys())
+            # Also offer the bare names (without ais-correlated- prefix)
+            # since _threshold_for resolves them.
+            for s in list(sites):
+                if s.startswith("ais-correlated-"):
+                    sites.append(s.removeprefix("ais-correlated-"))
+        except Exception:
+            pass
+    if not sites:
+        sites = [
+            "point-robinson", "bush-point", "orcasound-lab", "north-sjc",
+            "sunset-bay", "port-townsend", "mast-center", "andrews-bay",
+            "mbari", "sanctsound",
+        ]
+    return [s for s in sorted(set(sites)) if s.startswith(incomplete)]
+
+
 def _format_prob(p: float) -> str:
     bar_len = 20
     filled = int(round(p * bar_len))
@@ -78,6 +110,7 @@ def detect_command(
         None, "--site", "-s",
         help="Hydrophone site_id for per-site threshold calibration. "
              "If omitted, the global default 0.5 is used.",
+        autocompletion=_complete_site,
     ),
     ais_radius: int = typer.Option(
         0, "--ais",
@@ -87,6 +120,11 @@ def detect_command(
     as_json: bool = typer.Option(
         False, "--json",
         help="Emit a single-line JSON record instead of human-readable output.",
+    ),
+    memory: bool = typer.Option(
+        False, "--memory",
+        help="Query the ChromaDB acoustic memory (Tier-2 of the pipeline) "
+             "for the top-3 most similar past events. Useful for triage.",
     ),
 ) -> None:
     """Run the v7.6 + calibration pipeline on a single audio file.
@@ -195,3 +233,53 @@ def detect_command(
         console.print("[green]No vessel detected.[/green]")
     elif tier == "UNCERTAIN":
         console.print("[dim]Model abstained — uncertainty above 0.25 means insufficient evidence either way.[/dim]")
+
+    # Tier-2 memory lookup. Optional because spinning up ChromaDB takes
+    # a few hundred ms on first call and not every detection cares.
+    if memory:
+        _show_memory_matches(pred.get("embedding", []), console)
+
+
+def _show_memory_matches(embedding: list, console) -> None:
+    """Query ChromaDB for the closest past events. Prints up to 3 with
+    timestamp, location, threat_level. Robust to ChromaDB being empty
+    or unavailable — these are nice-to-have, not required."""
+    if not embedding:
+        return
+    try:
+        import asyncio
+        from ..adapters.chromadb_store import ChromaDBAcousticMemory
+    except Exception as e:
+        console.print(f"[yellow]  memory: import failed ({e.__class__.__name__})[/yellow]")
+        return
+
+    async def _go() -> list:
+        store = ChromaDBAcousticMemory()
+        try:
+            matches = await store.query_by_embedding(embedding, n=3)
+            return matches
+        finally:
+            await store.close()
+
+    try:
+        matches = asyncio.run(_go())
+    except Exception as e:
+        console.print(f"[yellow]  memory: query failed ({e.__class__.__name__}: {e})[/yellow]")
+        return
+
+    if not matches:
+        console.print()
+        console.print("[dim]  memory: no comparable past events in ChromaDB (empty store).[/dim]")
+        return
+
+    console.print()
+    console.print("[bold]  Closest past events in ChromaDB (Tier-2 memory)[/bold]")
+    for m in matches:
+        e = m.entry
+        loc = f"{e.location.lat:.3f},{e.location.lon:.3f}"
+        ts = e.timestamp.strftime("%Y-%m-%d %H:%M")
+        console.print(
+            f"    distance={m.score:.3f}  {ts}  "
+            f"loc={loc}  threat={e.threat_level.value}  "
+            f"vessel_type={e.vessel_type or '-'}"
+        )

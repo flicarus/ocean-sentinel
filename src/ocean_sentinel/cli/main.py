@@ -70,6 +70,10 @@ app.command(name="bench")(bench_command)
 from .doctor_command import doctor_command  # noqa: E402
 app.command(name="doctor")(doctor_command)
 
+# Inventory of known hydrophone sites with their calibration state.
+from .list_sites_command import list_sites_command  # noqa: E402
+app.command(name="list-sites")(list_sites_command)
+
 
 @app.command()
 def monitor(
