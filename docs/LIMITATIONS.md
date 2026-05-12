@@ -61,6 +61,52 @@ See [`docs/empirical_findings.md`](empirical_findings.md).
 | Per-site adapter actually changes inference path | measured in `scripts/measure_safeguard_impact.py` (ship_prob shifts 0.91 → 0.75 after adapter loaded) |
 | Per-site threshold actually applied at inference | `scripts/eval_ood.py` — point-robinson 62.7 % → 100 % on unseen 2024-08-15 date with thr=0.02 vs default 0.5 |
 
+### Gemma 4 multimodal — validated scope (day 15 finding)
+
+We tested Gemma 4 e4b multimodal on hydrophone mel spectrograms to
+validate whether it could verify CNN decisions independently. The
+test ran four held-out spectrograms (`scripts/test_gemma_spectrogram.py`)
+with no hint of the CNN's verdict, asking Gemma to classify each
+purely from the rendered PNG:
+
+| Case | Truth | CNN ship_prob | Gemma verdict | Match |
+|---|---|---|---|---|
+| Confident SHIP (ShipsEar) | ship | >0.9 | SHIP (1.0) | ✅ |
+| Confident AMBIENT (SanctSound) | not_ship | ~0.05 | SHIP (0.95) | ❌ |
+| Uncertain #1 (SanctSound) | not_ship | 0.35 | SHIP (0.95) | ❌ |
+| Uncertain #2 (ShipsEar) | not_ship | 0.35 | SHIP (1.0) | ❌ |
+
+**Result: 1/4 accuracy, strong SHIP bias regardless of ground truth.**
+Gemma's reasoning text is templatically plausible ("persistent
+horizontal bands at low frequency…") but the verdict does not track
+what is actually in the image. The model is **not** reliably reading
+hydrophone mel spectrograms — this is a domain-shift failure (mel-
+specs are not natural images Gemma was pre-trained on), not a model
+size issue.
+
+**Operational implications:**
+
+- We do NOT claim Gemma multimodal verifies CNN acoustic decisions.
+  The CNN's per-site calibrated decision is the auditable one.
+- `os identify-vessel` scopes Gemma multimodal to natural-image
+  inputs (vessel photographs), where the model demonstrably works.
+- The existing `gemma/explanations.py` multimodal narration path
+  remains in the codebase as a research artefact. In production it
+  generates plausible-sounding text *aligned with the CNN decision*
+  (the prompt instructs Gemma not to contradict), not an independent
+  verification. We make that scope explicit in the module docstring
+  rather than removing the feature.
+- Gemma's primary role pivoted from "multimodal verifier" to
+  "function-calling analytical synthesiser" — see `os brief`, which
+  uses Gemma 4 as the agent that gathers data via tool calls and
+  composes the intelligence-brief output.
+
+Native-audio modality (Gemma 4 e4b supports it per the model card)
+would likely solve the mel-spec problem outright, but Ollama does
+not currently expose audio input — verified by sending the .wav as
+`audio` / `audios` field, both ignored. Future work when the runtime
+catches up.
+
 ### Per-site threshold calibration — methodology
 
 Day-15 finding: balanced-sampler training (1/n site_count weighting)

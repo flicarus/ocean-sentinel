@@ -20,13 +20,27 @@ What this does instead
    for a 1–2 sentence operator-friendly explanation. The narration is
    *grounded in the image the model can see*, not in invented features.
 
-Why this matters for the submission
------------------------------------
-This is the most direct showcase of Gemma 4's native multimodal
-capability inside the system: the same model that orchestrates the
-14-tool flow also reads our spectrograms. If Ollama is unreachable
-or multimodal fails, we degrade gracefully — return the real trace
-and a templated explanation, never a fabricated one.
+Honest scope (day-15 validation, see docs/LIMITATIONS.md)
+---------------------------------------------------------
+A day-15 held-out test (scripts/test_gemma_spectrogram.py, 4 cases
+with no CNN hint) showed Gemma 4 e4b is NOT a reliable independent
+reader of hydrophone mel spectrograms: 1/4 accuracy with a strong
+SHIP bias. The narration produced by this module is therefore best
+understood as a **post-hoc rationalisation aligned with the CNN
+decision** (the prompt explicitly tells Gemma "do NOT contradict"),
+not an independent multimodal verification.
+
+We keep the feature because: (a) the *numeric* features it cites are
+real (peak frequency, low-band fraction, spectral flatness, centroid
+— all computed from the audio); (b) the narration makes CNN outputs
+more readable to non-technical operators; (c) the templated fallback
+always works when Ollama is unreachable, and never fabricates.
+
+For Gemma 4 multimodal that genuinely works, see `os identify-vessel`
+— scope limited to natural vessel photographs, which is Gemma 4's
+home turf. For Gemma 4 as analytical engine, see `os brief` — a
+function-calling agent that gathers data and composes intelligence
+briefs (no image input needed).
 """
 from __future__ import annotations
 
