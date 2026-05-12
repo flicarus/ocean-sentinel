@@ -41,7 +41,7 @@ from .ui import (
 app = typer.Typer(
     name="os",
     help="Ocean Sentinel — acoustic dark-vessel detection.",
-    add_completion=False,
+    add_completion=True,  # `os --install-completion` for bash/zsh/fish tab-complete
     no_args_is_help=True,
 )
 
@@ -65,6 +65,10 @@ app.command(name="info")(info_command)
 # Latency benchmark — reproducible perf claim per-machine.
 from .bench_command import bench_command  # noqa: E402
 app.command(name="bench")(bench_command)
+
+# Health check — verify install + plumbing before reporting bugs.
+from .doctor_command import doctor_command  # noqa: E402
+app.command(name="doctor")(doctor_command)
 
 
 @app.command()
