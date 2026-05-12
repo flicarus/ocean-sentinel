@@ -17,7 +17,7 @@ write-up can come here, find the underlying eval data file in
 | Metric | Value | n | Wilson 95 % CI | Source |
 |---|---|---|---|---|
 | **v7.6 + per-site calibration, held-out test split (PRIMARY)** | **96.4 %** | 4044 | — | `data/calibration/per_site_thresholds_v7_6_honest.json` |
-| **v7.6 + per-site calibration, OOD (unseen dates)** | **96.3 %** | 1838 | — | `scripts/eval_ood.py` (fresh pull 2026-05-12) |
+| **v7.6 + per-site calibration, OOD (8 sites × fresh dates)** | **96.0 %** | 4414 | — | `scripts/eval_ood.py` (fresh pull 2026-05-12) |
 | v7.6 vanilla (threshold 0.5) | 89.3 % | 8082 | — | `data/eval/per_site_v7_6.json` |
 | v7.5 baseline (27 sites) | 87.0 % | 6349 | — | `data/eval/per_site_v7_5.json` |
 | Point-robinson recall, v7.5 → v7.6+cal on OOD date | 13.4 % → **100 %** | 679 (fresh) | — | `scripts/eval_ood.py` 2024-08-15 pull |

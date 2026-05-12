@@ -157,14 +157,19 @@ We pulled fresh AIS-correlated data via
 - orcasound-lab 2024-09-26 (1.6 k seconds)
 - bush-point 2024-10-30 (1.3 k seconds)
 
-Eval (`scripts/eval_ood.py`):
+Eval (`scripts/eval_ood.py`), 8 sites × fresh dates × n=4 414:
 
 | Site | OOD n | Vanilla v7.6 | + calibration | Δ |
 |---|---|---|---|---|
-| bush-point | 513 | 100.0 % | 100.0 % | 0.0 pp |
-| orcasound-lab | 646 | 89.5 % | 89.5 % | 0.0 pp (no threshold set) |
-| **point-robinson** | 679 | **62.7 %** | **100.0 %** | **+37.3 pp** |
-| **OVERALL** | **1838** | **82.5 %** | **96.3 %** | **+13.8 pp** |
+| andrews-bay 2024-07-30 | 191 | 100.0 % | 100.0 % | 0.0 pp |
+| bush-point 2024-10-30 | 513 | 100.0 % | 100.0 % | 0.0 pp |
+| mast-center 2024-10-12 | 683 | 98.7 % | 98.7 % | 0.0 pp |
+| north-sjc 2024-06-20 | 691 | 94.6 % | 94.6 % | 0.0 pp |
+| orcasound-lab 2024-09-26 | 646 | 89.5 % | 89.5 % | 0.0 pp (no threshold set) |
+| **point-robinson 2024-08-15** | 679 | **62.7 %** | **100.0 %** | **+37.3 pp** |
+| port-townsend 2024-09-08 | 533 | 94.7 % | 94.7 % | 0.0 pp |
+| sunset-bay 2024-08-22 | 478 | 92.9 % | 92.9 % | 0.0 pp |
+| **OVERALL** | **4 414** | **90.3 %** | **96.0 %** | **+5.7 pp** |
 
 **Test-split overall 96.4 % vs OOD overall 96.3 %** — these match
 within sampling noise. That means:
