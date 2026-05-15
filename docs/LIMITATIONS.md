@@ -264,3 +264,58 @@ in a fishing-violation prosecution" — is **explicitly out of scope** of
 this hackathon submission. Such use would require independent
 verification, certified test sets, regulatory approval, and a longer
 operational track record.
+
+---
+
+## Model interpretability — what v7.6 actually attends to
+
+Grad-CAM analysis on v7.6's final convolutional block (`backbone.block4`),
+applied to OC01 chunks paired with MarineCadastre AIS ground truth,
+shows the model attends to:
+
+- **Cavitation broadband** (500-1000 Hz, mel bins 75-128) — primary attention
+- **Lower engine band** (80-250 Hz, mel bins 25-50) — secondary attention
+- **Blade-rate band** (5-50 Hz, mel bins 0-25) — **near-zero attention**
+
+This last point is by design, not failure. The preprocessing applies
+`_LOW_FREQ_MASK` (`src/ocean_sentinel/services/cnn_v7_classifier.py`):
+all bins below the high-pass cutoff are replaced with the mean of the
+unmasked bins **before the model sees the spectrogram**. The reason:
+low-frequency content is dominated by hydrophone-specific noise
+(mooring, surf, electrical hum) that does not generalise across
+deployments. The mask forces the model to learn site-invariant
+features.
+
+The case-study Part I PSD finding of "+13 dB excess at 28-37 Hz
+(blade-rate band)" was a Welch-PSD discovery on the raw audio
+waveform — that representation has ~1 Hz resolution. The mel
+spectrogram the CNN sees has 5–30 Hz per bin and starts above the
+high-pass cutoff, so it cannot resolve narrow blade-rate tonals even
+in principle.
+
+What this means practically:
+
+- The CNN and traditional PSD analysis use **complementary signal
+  pathways**. They converge on the same vessels (verified on OC01)
+  via different acoustic features.
+- Operators interpreting Ocean Sentinel detections should not expect
+  the CNN to "verify" the blade-rate signature an acoustician would
+  highlight in a PSD plot. It uses different evidence.
+- Cavitation broadband is a well-known vessel signature (Ross 1976,
+  Urick 1983, Wales & Heitmeyer 2002) — the model is using a real
+  physical feature, just one that doesn't show up as a sharp narrowband
+  peak in PSD plots.
+- 96.4% honest test accuracy + 96.0% OOD validation rule out shortcut
+  learning. The model is not classifying based on recording-level
+  texture or non-acoustic confounders.
+
+Limitations of this finding:
+
+- We have not tested whether the model fails on vessels with low
+  cavitation but strong engine tonals (e.g. some passenger vessels,
+  electric/hybrid hulls). Such cases would be the model's natural
+  failure mode.
+- Grad-CAM heatmaps on broadband classifiers are inherently diffuse;
+  the heatmaps do not show a single "smoking gun" attention region.
+  Visual interpretation requires careful framing — see
+  `/case-study/audit` for the framing we use.

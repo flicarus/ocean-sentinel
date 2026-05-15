@@ -50,3 +50,8 @@ CHAT/
 .vscode/
 .idea/
 .claude/
+
+# Phase 3 OC01 audit — raw MarineCadastre AIS archive (~1.3GB, downloadable)
+data/audit/marine_cadastre/*.zip
+data/audit/marine_cadastre/*.csv
+data/audit/.DS_Store
