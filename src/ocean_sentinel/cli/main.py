@@ -84,6 +84,11 @@ app.command(name="brief")(brief_command)
 from .identify_vessel_command import identify_vessel_command  # noqa: E402
 app.command(name="identify-vessel")(identify_vessel_command)
 
+# End-to-end alert pipeline demo — mock stream → CNN → threat scoring →
+# SendGrid email + Twilio SMS + webhook. Demonstrates ranger notification.
+from .alert_demo_command import alert_demo_command  # noqa: E402
+app.command(name="alert-demo")(alert_demo_command)
+
 
 @app.command()
 def monitor(
