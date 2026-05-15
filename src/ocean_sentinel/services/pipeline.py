@@ -17,6 +17,7 @@ from ocean_sentinel.domain.protocols import HydrophoneSource
 from ocean_sentinel.services.audio_analyzer import AudioAnalyzer
 from ocean_sentinel.services.correlation import CorrelationService
 from ocean_sentinel.services.classifier import ThreatClassifierService
+from ocean_sentinel.services.threat_level import compute_threat_level
 
 log = structlog.get_logger()
 
@@ -100,8 +101,11 @@ class Pipeline:
             ocean=ocean,
         )
 
+        # Apply MPA escalation on top of the classifier result
+        threat_level = compute_threat_level(result.threat_level, ais_gaps)
+
         # Skip non-threats
-        if result.threat_level == ThreatLevel.NONE:
+        if threat_level == ThreatLevel.NONE:
             return None
 
         # Build detection event
@@ -109,7 +113,7 @@ class Pipeline:
             id=str(uuid.uuid4()),
             timestamp=datetime.now(timezone.utc),
             location=segment.location,
-            threat_level=result.threat_level,
+            threat_level=threat_level,
             confidence=result.confidence,
             classification_reasoning=result.reasoning,
             audio_segment=analyzed,

@@ -20,6 +20,7 @@ from ocean_sentinel.domain.models import (
     ClassificationResult,
     OceanConditions,
 )
+from ocean_sentinel.services.threat_level import compute_threat_level  # noqa: F401 — re-exported
 from ocean_sentinel.services.audio_analyzer import AudioAnalyzer
 from ocean_sentinel.services.cnn_v7_classifier import CNNV7Classifier
 from ocean_sentinel.decision import (
@@ -77,11 +78,13 @@ class ThreatClassifierService:
     ) -> ClassificationResult:
         """Run the full Layer 1-6 pipeline on one AudioSegment.
 
-        `ais_gaps` / `ocean` / `correlator` are accepted for backwards
-        compatibility with the previous Gemma-era signature but are not
-        consumed — AIS is fetched inside DecisionEngine on demand.
+        `ocean` / `correlator` are accepted for backwards compatibility but
+        are not consumed — AIS is fetched inside DecisionEngine on demand.
+        `ais_gaps` is retained: any gap with `in_mpa=True` escalates the
+        final threat level to CRITICAL via compute_threat_level().
         """
-        del ais_gaps, ocean, correlator  # see class docstring
+        del ocean, correlator
+        _ais_gaps: list[AISGapEvent] = ais_gaps or []
 
         analyzed_audio, features = self._analyzer.analyze(audio)
 
@@ -103,7 +106,7 @@ class ThreatClassifierService:
                 ship_fraction=windowed.ship_fraction,
             )
             return ClassificationResult(
-                threat_level=ThreatLevel.NONE,
+                threat_level=compute_threat_level(ThreatLevel.NONE, _ais_gaps),
                 confidence=windowed.confidence,
                 reasoning=(
                     f"CNN sliding-window: not_ship "
@@ -140,7 +143,7 @@ class ThreatClassifierService:
         )
 
         return ClassificationResult(
-            threat_level=decision.threat_level,
+            threat_level=compute_threat_level(decision.threat_level, _ais_gaps),
             confidence=decision.confidence,
             reasoning=decision.reasoning,
             raw_output={

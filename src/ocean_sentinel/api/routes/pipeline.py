@@ -1,9 +1,15 @@
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-from datetime import datetime, timezone
+
+from ocean_sentinel.adapters.alerts.sendgrid import SendGridAdapter
+from ocean_sentinel.domain.enums import AlertChannel, AlertStatus, ThreatLevel
+from ocean_sentinel.domain.models import Alert
+from ocean_sentinel.exceptions import AlertDeliveryError
 
 router = APIRouter()
 
@@ -79,13 +85,46 @@ def _build_source(source_id: str, settings):
     )
 
 
+async def _send_pipeline_alert(event, settings, store) -> None:
+    """Fire a SendGrid email and persist the alert record for HIGH/CRITICAL events."""
+    sendgrid = SendGridAdapter(settings)
+    alert = Alert(
+        id=str(uuid.uuid4()),
+        event_id=event.id,
+        channel=AlertChannel.EMAIL,
+        recipient=settings.sendgrid_from_email,
+        sent_at=None,
+        status=AlertStatus.PENDING,
+    )
+    try:
+        await sendgrid.send(alert, event)
+        alert = Alert(
+            id=alert.id,
+            event_id=alert.event_id,
+            channel=alert.channel,
+            recipient=alert.recipient,
+            sent_at=datetime.now(timezone.utc),
+            status=AlertStatus.SENT,
+        )
+    except AlertDeliveryError as exc:
+        alert = Alert(
+            id=alert.id,
+            event_id=alert.event_id,
+            channel=alert.channel,
+            recipient=alert.recipient,
+            sent_at=None,
+            status=AlertStatus.FAILED,
+            failure_reason=str(exc),
+        )
+    await store.save_alert(alert)
+
+
 @router.post("/scan", response_model=ScanResponse)
 async def run_scan(req: ScanRequest, request: Request):
     """Run the full pipeline scan on a given date + hydrophone source."""
     from ocean_sentinel.services.audio_analyzer import AudioAnalyzer
     from ocean_sentinel.services.classifier import ThreatClassifierService
 
-    import uuid
     from ocean_sentinel.domain.models import AcousticFeatures, DetectionEvent
 
     settings = request.app.state.settings
@@ -187,6 +226,9 @@ async def run_scan(req: ScanRequest, request: Request):
                     raw_model_output=result.raw_output,
                 )
                 await store.save_event(event)
+
+                if event.threat_level in (ThreatLevel.HIGH, ThreatLevel.CRITICAL):
+                    await _send_pipeline_alert(event, settings, store)
 
         except Exception as e:
             import traceback

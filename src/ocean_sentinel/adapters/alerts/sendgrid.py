@@ -13,6 +13,7 @@ class SendGridAdapter:
     def __init__(self, settings: Settings):
         self.api_key = settings.sendgrid_api_key
         self.from_email = settings.sendgrid_from_email
+        self.from_name = settings.sendgrid_from_name
 
     async def send(self, alert: Alert, event: DetectionEvent) -> Alert:
         if not self.api_key:
@@ -40,7 +41,7 @@ Ocean Sentinel — Multimodal Ocean Intelligence
             "personalizations": [
                 {"to": [{"email": alert.recipient}]}
             ],
-            "from": {"email": self.from_email},
+            "from": {"email": self.from_email, "name": self.from_name},
             "subject": subject,
             "content": [{"type": "text/plain", "value": body}]
         }

@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     sendgrid_api_key: str | None = None
     sendgrid_from_email: str = ""
+    sendgrid_from_name: str = "Ocean Sentinel"
     twilio_account_sid: str | None = None
     twilio_auth_token: str | None = None
     twilio_from_number: str | None = None
