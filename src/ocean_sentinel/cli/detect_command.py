@@ -84,24 +84,26 @@ def _decide_tier(
     threshold: float,
     uncertainty: float,
     ais_in_radius: int,
+    recently_gone_dark_count: int = 0,
+    nearest_vessel_cpa_km: float | None = None,
 ) -> tuple[str, str]:
     """Map raw outputs to (decision_tier, severity).
 
-    Mirrors gemma.cnn_inference._decide_tier but uses the per-site
-    threshold passed in rather than the global conformal one. Order
-    matters: abstention check first, then ambient, then the AIS-vs-
-    no-AIS bifurcation that separates dark vessels from confirmed.
+    Delegates to `domain.decision_tier.decide_tier` so monitor / detect /
+    simulate_detection all share one tier policy (and `os detect` gains
+    the GONE_DARK_VESSEL tier once AIS history is wired).
     """
-    UNCERTAINTY_MAX = 0.25
-    if uncertainty > UNCERTAINTY_MAX:
-        return "UNCERTAIN", "MEDIUM"
-    if ship_prob < threshold:
-        return "AMBIENT", "NONE"
-    if ais_in_radius == 0 and ship_prob >= 0.85:
-        return "DARK_VESSEL", "HIGH"
-    if ais_in_radius >= 1 and ship_prob >= 0.65:
-        return "CONFIRMED_VESSEL", "LOW"
-    return "ACOUSTIC_ONLY_LOW", "MEDIUM"
+    from ..domain.decision_tier import AISContext, decide_tier
+    return decide_tier(
+        ship_prob=ship_prob,
+        uncertainty=uncertainty,
+        site_threshold=threshold,
+        ais=AISContext(
+            ais_vessels_in_radius=ais_in_radius,
+            recently_gone_dark_count=recently_gone_dark_count,
+            nearest_vessel_cpa_km=nearest_vessel_cpa_km,
+        ),
+    )
 
 
 def detect_command(
@@ -126,13 +128,26 @@ def detect_command(
         help="Query the ChromaDB acoustic memory (Tier-2 of the pipeline) "
              "for the top-3 most similar past events. Useful for triage.",
     ),
+    no_push: bool = typer.Option(
+        False, "--no-push",
+        help="Skip pushing this detection to the central dashboard. "
+             "By default `os detect --site X` mirrors `os monitor` "
+             "behaviour and posts the event to the ingest gateway; pass "
+             "this when you just want a local one-shot classification.",
+    ),
 ) -> None:
     """Run the v7.6 + calibration pipeline on a single audio file.
+
+    When --site is provided, the detection is also persisted to the
+    project's central dashboard (same path as `os monitor`). Use
+    --no-push to suppress that side effect — useful for ad-hoc
+    sanity checks you don't want showing up as alerts.
 
     Examples:
 
         os detect my_clip.wav
         os detect my_clip.wav --site point-robinson --ais 0
+        os detect my_clip.wav --site point-robinson --no-push  # local only
         os detect my_clip.wav --json | jq .ship_prob
     """
     from ..gemma.cnn_inference import _load_classifier, _DEFAULT_CHECKPOINT
@@ -238,6 +253,50 @@ def detect_command(
     # a few hundred ms on first call and not every detection cares.
     if memory:
         _show_memory_matches(pred.get("embedding", []), console)
+
+    # Persist this detection (local jsonl + remote gateway) on the same
+    # path `os monitor` uses, so a user running ad-hoc `os detect` for
+    # a real site sees it on the dashboard. Skipped when --site is
+    # missing (no site context to attribute the event to) or --no-push
+    # is set, and always skipped for --json output (callers piping JSON
+    # tend to be scripts that don't want side effects).
+    if site and not no_push and not as_json:
+        det = {
+            "ok": True,
+            "decision_id":           f"DET-{abs(hash(str(path) + site)) % 100000:05d}",
+            "site_id":               site,
+            "clip":                  str(path),
+            "cnn_label":             pred.get("label", "not_ship"),
+            "cnn_confidence":        round(ship_prob, 3),
+            "cnn_uncertainty":       round(uncertainty, 3),
+            "conformal_threshold":   round(threshold, 3),
+            "conformal_p":           round(ship_prob, 3),
+            "conformal_pass":        bool(ship_prob >= threshold),
+            "ais_vessels_in_radius": ais_radius,
+            "decision_tier":         tier,
+            "severity":              severity,
+            "checkpoint":            _DEFAULT_CHECKPOINT,
+            "summary":               f"{tier} ({severity}) · CNN p={ship_prob:.2f}",
+        }
+        try:
+            from ..services.event_persistence import persist_detection
+            cfg = _load_site_config(site)
+            persist_detection(det, site, path, cfg)
+        except Exception:
+            # Persistence is a side effect — never fail the CLI on it.
+            pass
+
+
+def _load_site_config(site_id: str) -> dict:
+    """Best-effort read of data/sites/{site_id}.yaml (returns {} if missing)."""
+    import yaml
+    p = Path("data/sites") / f"{site_id}.yaml"
+    if not p.exists():
+        return {}
+    try:
+        return yaml.safe_load(p.read_text()) or {}
+    except Exception:
+        return {}
 
 
 def _show_memory_matches(embedding: list, console) -> None:

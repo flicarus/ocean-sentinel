@@ -45,18 +45,6 @@ console = Console(highlight=False, soft_wrap=False)
 
 
 # ── Banner ──────────────────────────────────────────────────────────────
-# Sofar.ai brand mark — 3 staggered bars of different lengths, matching
-# the wordmark's "≡" prefix glyph. Pattern (left indent, length):
-#   row 1:  0 indent · length 10   (top, medium, flush left)
-#   row 2:  6 indent · length  6   (middle, short, offset right)
-#   row 3:  0 indent · length 14   (bottom, longest, flush left)
-_BARS: list[tuple[int, int]] = [
-    (0, 10),
-    (6, 6),
-    (0, 14),
-]
-
-
 def _render_logo() -> str:
     """SOFAR AI in ANSI Shadow — pre-rendered each session, cached after."""
     return Figlet(font="ansi_shadow", width=120).renderText("SOFAR AI")
@@ -66,19 +54,9 @@ def show_banner() -> None:
     """Top-of-session brand banner. Once per session.
 
     Layout:
-        ━━━━━━━━━━              ← Sofar.ai 3-bar mark (staggered ≡)
-              ━━━━━━
-        ━━━━━━━━━━━━━━
         [BIG SOFAR AI in ANSI Shadow]
         Ocean Sentinel · acoustic dark-vessel detection · v0.7.4
     """
-    console.print()
-
-    # Logo mark — three staggered teal rules of different lengths
-    for indent, length in _BARS:
-        bar = " " * indent + "━" * length
-        console.print(Padding(Text(bar, style=f"bold {TEAL}"), (0, 4)))
-
     console.print()
 
     # Big wordmark

@@ -82,33 +82,33 @@ def _make_spec(y: np.ndarray, sr: int) -> np.ndarray:
 
 def _decide_tier(
     ship_prob: float,
-    conformal_pass: bool,
+    site_threshold: float,
     uncertainty: float,
     ais_vessels_in_radius: int,
+    recently_gone_dark_count: int = 0,
+    nearest_vessel_cpa_km: float | None = None,
 ) -> tuple[str, str]:
-    """Map raw model outputs → (decision_tier, severity).
+    """Thin wrapper around `domain.decision_tier.decide_tier` — single
+    source of truth for tier classification across the CLI.
 
-    Mirrors the production policy in src/ocean_sentinel/decision/engine.py
-    at a coarse level; finer gates can be layered on later.
-
-    UNCERTAINTY_MAX = 0.25 was chosen empirically: scripts/benchmark_v7_4.py
-    swept candidates 0.18-0.30 across n=35 held-out unseen samples and
-    found 0.25 maximises confident-decision rate (100%) with no loss of
-    accuracy (still 100% when the model decides). The earlier 0.20
-    bisected the day-9 unc_mean distribution (0.16-0.22) and forced
-    abstention on ~54% of borderline-confident clips. See
-    data/eval/threshold_sweep.json for the full sweep table.
+    Previously this module shipped a copy of the tier logic that was a
+    coarse subset of the production policy (no GONE_DARK_VESSEL, used
+    a binary conformal_pass instead of probabilistic gating with the
+    site threshold). That drift meant `os monitor` and `os detect`
+    couldn't surface the highest-confidence illegal-fishing pattern
+    (vessel turns AIS off → acoustic positive). Delegating fixes it.
     """
-    UNCERTAINTY_MAX = 0.25
-    if uncertainty > UNCERTAINTY_MAX:
-        return "UNCERTAIN", "MEDIUM"
-    if not conformal_pass:
-        return "AMBIENT", "NONE"
-    if ais_vessels_in_radius == 0 and ship_prob >= 0.85:
-        return "DARK_VESSEL", "HIGH"
-    if ais_vessels_in_radius >= 1 and ship_prob >= 0.65:
-        return "CONFIRMED_VESSEL", "LOW"
-    return "ACOUSTIC_ONLY_LOW", "MEDIUM"
+    from ocean_sentinel.domain.decision_tier import AISContext, decide_tier
+    return decide_tier(
+        ship_prob=ship_prob,
+        uncertainty=uncertainty,
+        site_threshold=site_threshold,
+        ais=AISContext(
+            ais_vessels_in_radius=ais_vessels_in_radius,
+            recently_gone_dark_count=recently_gone_dark_count,
+            nearest_vessel_cpa_km=nearest_vessel_cpa_km,
+        ),
+    )
 
 
 def simulate_detection(
@@ -117,7 +117,9 @@ def simulate_detection(
     *,
     checkpoint: str = _DEFAULT_CHECKPOINT,
     conformal_path: str = _DEFAULT_CONFORMAL,
-    ais_vessels_in_radius: int = 0,    # mocked until GFW is wired
+    ais_vessels_in_radius: int = 0,            # mocked until GFW is wired
+    recently_gone_dark_count: int = 0,         # mocked until GFW history is wired
+    nearest_vessel_cpa_km: float | None = None,
 ) -> dict[str, Any]:
     """Run the real v7.4 pipeline on `clip` for the given `site_id`.
 
@@ -159,14 +161,22 @@ def simulate_detection(
     ship_prob = confidence if label == "ship" else (1.0 - confidence)
     uncertainty = float(pred.get("uncertainty", 0.0))
 
-    threshold = float(conformal["threshold"])
-    conformal_pass = ship_prob >= threshold
+    # Prefer the per-site threshold the classifier resolved for this
+    # source_id over the global conformal value — keeps the tier decision
+    # consistent with `pred.label`, which is already site-thresholded.
+    try:
+        site_threshold = float(classifier._threshold_for(site_id))
+    except Exception:
+        site_threshold = float(conformal["threshold"])
+    conformal_pass = ship_prob >= site_threshold
 
     tier, severity = _decide_tier(
         ship_prob=ship_prob,
-        conformal_pass=conformal_pass,
+        site_threshold=site_threshold,
         uncertainty=uncertainty,
         ais_vessels_in_radius=ais_vessels_in_radius,
+        recently_gone_dark_count=recently_gone_dark_count,
+        nearest_vessel_cpa_km=nearest_vessel_cpa_km,
     )
 
     decision_id = f"DET-{abs(hash(clip + site_id)) % 100000:05d}"
@@ -179,17 +189,18 @@ def simulate_detection(
         "cnn_label": label,
         "cnn_confidence": round(ship_prob, 3),
         "cnn_uncertainty": round(uncertainty, 3),
-        "conformal_threshold": round(threshold, 3),
+        "conformal_threshold": round(site_threshold, 3),
         "conformal_p": round(ship_prob, 3),
         "conformal_pass": bool(conformal_pass),
         "ais_vessels_in_radius": ais_vessels_in_radius,
+        "recently_gone_dark_count": recently_gone_dark_count,
         "decision_tier": tier,
         "severity": severity,
         "checkpoint": checkpoint,
         "site_adapter": site_adapter_path,
         "summary": (
             f"{tier} ({severity}) · CNN p={ship_prob:.2f} "
-            f"vs conformal {threshold:.2f} · AIS {ais_vessels_in_radius}"
+            f"vs threshold {site_threshold:.2f} · AIS {ais_vessels_in_radius}"
         ),
     }
 

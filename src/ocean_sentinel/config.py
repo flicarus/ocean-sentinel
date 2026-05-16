@@ -42,3 +42,11 @@ class Settings(BaseSettings):
 
     supabase_url: str | None = None
     supabase_service_role_key: str | None = None
+
+    # Public ingest gateway for vessel events. End-user installs use this
+    # default to push detections to the project's central dashboard
+    # WITHOUT carrying a service-role secret. Self-hosters can point at
+    # their own Edge Function via OS_INGEST_URL.
+    ingest_url: str = (
+        "https://sshfjjihgzzmxjqxphpg.supabase.co/functions/v1/ingest-event"
+    )

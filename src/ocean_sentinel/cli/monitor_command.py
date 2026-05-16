@@ -80,65 +80,20 @@ def _site_config(site_id: str) -> dict[str, Any]:
         return {}
 
 
+# Backwards-compat thin wrappers — the canonical logic lives in
+# `services/event_persistence.py` so every command (monitor, detect, ...)
+# stays in lockstep. Tests still import these names.
+
 def _to_vessel_event(
-    det: dict[str, Any],
-    site_id: str,
-    config: dict[str, Any],
+    det: dict[str, Any], site_id: str, config: dict[str, Any],
 ) -> dict[str, Any]:
-    """Map the simulate_detection result + site config to a row that
-    matches the VesselEvent shape used by the dashboard.
-
-    Fields not directly available from a single inference (gemma_reasoning,
-    long narrative, AIS context) get sensible defaults. The /api/events/feed
-    endpoint recomputes time_ago / ais_offline_since at request time.
-    """
-    severity_to_threat = {"HIGH": "HIGH", "MEDIUM": "MEDIUM",
-                          "LOW": "LOW", "NONE": "LOW"}
-    threat = severity_to_threat.get(det.get("severity", "LOW"), "LOW")
-    cnn_conf = float(det.get("cnn_confidence", 0.0))
-
-    return {
-        # internal/pipeline fields
-        "ts":                   datetime.now(timezone.utc).isoformat(),
-        "site_id":              site_id,
-        "decision_tier":        det.get("decision_tier"),
-        "severity":             det.get("severity"),
-        "cnn_confidence":       cnn_conf,
-        "cnn_uncertainty":      det.get("cnn_uncertainty"),
-        "conformal_threshold":  det.get("conformal_threshold"),
-        "conformal_pass":       det.get("conformal_pass"),
-        "ais_vessels_in_radius": det.get("ais_vessels_in_radius", 0),
-        "clip":                 det.get("clip"),
-        "site_adapter":         det.get("site_adapter"),
-        # VesselEvent display fields (frontend contract)
-        "id":                   det.get("decision_id", "DET-?"),
-        "vessel":               f"contact-{det.get('decision_id', '?')}",
-        "lat":                  float(config.get("lat", 0.0) or 0.0),
-        "lng":                  float(config.get("lon", 0.0) or 0.0),
-        "threat":               threat,
-        "confidence":           round(cnn_conf * 100.0, 1),
-        "hydrophone":           site_id,
-        "mpa_name":             str(config.get("nearest_mpa", "—")),
-        "mpa_distance_km":      float(config.get("mpa_distance_km", 0.0) or 0.0),
-        "gemma_reasoning":      det.get("summary", "—"),
-        "vessel_window":        f"{int(det.get('ais_vessels_in_radius', 0) or 0)} AIS vessels in radius",
-        "cnn_analysis":         (
-            f"CNN ship_prob={cnn_conf:.2f}, "
-            f"threshold={float(det.get('conformal_threshold', 0)):.2f}, "
-            f"uncertainty={float(det.get('cnn_uncertainty', 0)):.2f}"
-        ),
-    }
+    from ..services.event_persistence import build_event
+    return build_event(det, site_id, config)
 
 
 def append_event(site_id: str, event: dict[str, Any]) -> Path:
-    """Append a row to data/sites/{site_id}/events.jsonl. Idempotent on
-    repeated calls; the dashboard reads this file directly."""
-    site_dir = _site_dir(site_id)
-    site_dir.mkdir(parents=True, exist_ok=True)
-    events_path = site_dir / "events.jsonl"
-    with events_path.open("a") as f:
-        f.write(json.dumps(event) + "\n")
-    return events_path
+    from ..services.event_persistence import append_local
+    return append_local(site_id, event)
 
 
 def append_error(site_id: str, clip: Path, error: str) -> None:
@@ -159,9 +114,10 @@ def append_error(site_id: str, clip: Path, error: str) -> None:
 def process_one(site_id: str, clip: Path) -> dict[str, Any] | None:
     """Run one .wav through simulate_detection and persist the event.
 
-    Returns the VesselEvent row that was appended to events.jsonl, or
-    None if the clip was unprocessable (the failure is logged separately
-    so the caller can keep going).
+    Delegates to `services.event_persistence.persist_detection`, which
+    handles both sinks (local jsonl + public ingest gateway). Returns
+    the event row, or None on unprocessable input (those go to
+    errors.jsonl so the watch loop keeps going).
     """
     try:
         det = simulate_detection(site_id=site_id, clip=str(clip))
@@ -173,9 +129,8 @@ def process_one(site_id: str, clip: Path) -> dict[str, Any] | None:
         append_error(site_id, clip, det.get("error", "unknown error"))
         return None
 
-    event = _to_vessel_event(det, site_id, _site_config(site_id))
-    append_event(site_id, event)
-    return event
+    from ..services.event_persistence import persist_detection
+    return persist_detection(det, site_id, clip, _site_config(site_id))
 
 
 # ── modes ───────────────────────────────────────────────────────────────
