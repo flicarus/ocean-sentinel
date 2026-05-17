@@ -28,13 +28,13 @@ Underwater microphones (hydrophones) don't go blind. A 30 m trawler is loud whet
                                                                 ▼
                                               ┌──────────────────────────────┐
                                               │  vessel_events  (Supabase)   │
-                                              │  ───────────────────────────│
-                                              │  realtime dashboard pin       │
-                                              │  + audit-log row              │
+                                              │  ─────────────────────────── │
+                                              │  realtime dashboard pin      │
+                                              │  + audit-log row             │
                                               └──────────────────────────────┘
 ```
 
-Three-layer pipeline, designed to run **offline on a Raspberry Pi** with the cloud as an optional dashboard:
+Three-layer pipeline:
 
 | Layer | What | Footprint |
 |---|---|---|
