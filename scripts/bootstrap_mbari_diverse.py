@@ -42,7 +42,7 @@ from ocean_sentinel.services.audio_analyzer import AudioAnalyzer
 log = structlog.get_logger()
 
 
-OUT_PATH = Path("data/training/v7_bulk/mbari_diverse.jsonl")
+DEFAULT_OUT_PATH = Path("data/training/v7_bulk/mbari_diverse.jsonl")
 SPEC_DIR = Path("data/spectrograms")
 
 
@@ -64,39 +64,50 @@ def _vessel_type_label(vc: str) -> str:
     }.get(vc.lower(), vc or "none")
 
 
-def _load_existing_capture_starts() -> set[str]:
-    """Skip already-pulled chunks so re-runs are idempotent."""
-    if not OUT_PATH.exists():
-        return set()
+def _load_existing_capture_starts(out_path: Path) -> set[str]:
+    """Skip already-pulled chunks so re-runs are idempotent.
+
+    Reads BOTH the target file and any sibling `mbari_diverse*.jsonl`
+    files in the same directory, so parallel workers writing to
+    `mbari_diverse_q1.jsonl` and `mbari_diverse_q3.jsonl` don't fetch
+    the same capture_start twice.
+    """
     seen: set[str] = set()
-    with OUT_PATH.open() as f:
-        for line in f:
+    parent = out_path.parent
+    if parent.exists():
+        for f in parent.glob("mbari_diverse*.jsonl"):
             try:
-                r = json.loads(line)
-                if "audio_capture_start" in r:
-                    seen.add(r["audio_capture_start"])
-            except json.JSONDecodeError:
+                with f.open() as fh:
+                    for line in fh:
+                        try:
+                            r = json.loads(line)
+                            if "audio_capture_start" in r:
+                                seen.add(r["audio_capture_start"])
+                        except json.JSONDecodeError:
+                            continue
+            except OSError:
                 continue
     return seen
 
 
-def _log_pair(entry: dict) -> None:
-    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with OUT_PATH.open("a") as f:
+def _log_pair(entry: dict, out_path: Path) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("a") as f:
         f.write(json.dumps(entry) + "\n")
 
 
 async def main(days: list[str], chunks_per_hour: int, radius_km: float,
-               cap_per_day_per_label: int) -> None:
+               cap_per_day_per_label: int, out_path: Path) -> None:
     settings = Settings()
     mbari = MBARIAdapter(settings)
     gfw = GFWAdapter(settings)
     analyzer = AudioAnalyzer(settings)
     SPEC_DIR.mkdir(parents=True, exist_ok=True)
 
-    seen_starts = _load_existing_capture_starts()
+    seen_starts = _load_existing_capture_starts(out_path)
     if seen_starts:
-        log.info("dedup_active", existing_chunks=len(seen_starts))
+        log.info("dedup_active", existing_chunks=len(seen_starts),
+                 out_path=str(out_path))
 
     counters = {"ship": 0, "not_ship": 0, "skipped_seen": 0,
                 "skipped_cap": 0, "fetch_failed": 0}
@@ -204,7 +215,7 @@ async def main(days: list[str], chunks_per_hour: int, radius_km: float,
                     "distance_bucket": distance_bucket,
                     "ground_truth_label": threat_level,
                 }
-                _log_pair(entry)
+                _log_pair(entry, out_path)
                 seen_starts.add(key)
                 counters[label] += 1
                 per_label_today[label] += 1
@@ -225,15 +236,22 @@ def cli() -> None:
         default="2024-02-01,2024-04-01,2024-06-01,2024-08-01,2024-10-01,2024-12-01",
         help="Comma-separated YYYY-MM-DD list. Default = bi-monthly across 2024.",
     )
-    ap.add_argument("--chunks-per-hour", type=int, default=2,
-                    help="How many 60s chunks to extract per hour (24 hours covered)")
+    ap.add_argument("--chunks-per-hour", type=int, default=8,
+                    help="How many 60s chunks to extract per hour (24 hours covered). "
+                         "MBARI runs 24/7 at 16 kHz — bumping this just samples more "
+                         "of the existing audio, no extra MBARI cost.")
     ap.add_argument("--radius-km", type=float, default=10.0)
-    ap.add_argument("--cap-per-day-per-label", type=int, default=30,
-                    help="Max ship + max ambient chunks per day (prevents class skew)")
+    ap.add_argument("--cap-per-day-per-label", type=int, default=200,
+                    help="Max ship + max ambient chunks per day. Prevents one "
+                         "very-busy day from dominating; with cap=200 we still "
+                         "let a single day contribute up to 400 rows.")
+    ap.add_argument("--out", default=str(DEFAULT_OUT_PATH),
+                    help="Output JSONL path. Use distinct paths for parallel "
+                         "workers (e.g. mbari_diverse_q1.jsonl, _q3.jsonl).")
     args = ap.parse_args()
     days = [d.strip() for d in args.days.split(",") if d.strip()]
     asyncio.run(main(days, args.chunks_per_hour, args.radius_km,
-                     args.cap_per_day_per_label))
+                     args.cap_per_day_per_label, Path(args.out)))
 
 
 if __name__ == "__main__":

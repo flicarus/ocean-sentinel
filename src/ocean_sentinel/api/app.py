@@ -12,7 +12,7 @@ from ocean_sentinel.adapters.chromadb_store import ChromaDBAcousticMemory
 from ocean_sentinel.adapters.persistence import SQLiteEventStore
 from ocean_sentinel.adapters.training_logger import JSONLTrainingLogger
 from ocean_sentinel.adapters.supabase_training_logger import SupabaseTrainingLogger
-from ocean_sentinel.api.routes import health, events, alerts, dashboard, pipeline, logs, memory
+from ocean_sentinel.api.routes import health, events, feed, alerts, dashboard, pipeline, logs, memory
 from ocean_sentinel.api.middleware import RequestIDMiddleware, ErrorHandlerMiddleware
 from ocean_sentinel.logging import configure_logging
 from ocean_sentinel.services.cnn_v7_classifier import CNNV7Classifier
@@ -106,6 +106,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router, prefix="/health", tags=["health"])
     app.include_router(events.router, prefix="/events", tags=["events"])
+    app.include_router(feed.router,   prefix="/api/events", tags=["feed"])
     app.include_router(alerts.router, prefix="/alerts", tags=["alerts"])
     app.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
     app.include_router(pipeline.router, prefix="/pipeline", tags=["pipeline"])

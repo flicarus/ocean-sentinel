@@ -19,8 +19,18 @@ dependencies = [
     "pydantic-settings",
     "python-dotenv",
     "structlog",
+    "rich>=13.7",
+    "typer>0.12",
     "uvicorn",
+    "pyfiglet>=1.0",
+    "ollama>=0.4",
+    "pyyaml>=6.0",
 ]
+[project.scripts]
+os = "ocean_sentinel.cli.main:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"ocean_sentinel.test_samples" = ["*.wav", "*.yaml"]

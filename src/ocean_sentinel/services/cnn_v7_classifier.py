@@ -76,11 +76,105 @@ class CNNV7Classifier:
         self._model.eval()
         self._ckpt_path = str(ckpt_path)
         self._evidence_threshold = evidence_threshold
+        self._site_adapter: torch.nn.Module | None = None
+        self._site_adapter_path: str | None = None
+        self._site_thresholds: dict[str, float] = {}
+        self._site_thresholds_path: str | None = None
         log.info(
             "cnn_v7_loaded",
             ckpt=self._ckpt_path, device=str(self._device),
             params=sum(p.numel() for p in self._model.parameters()),
         )
+
+    def set_site_thresholds(self, path: str | Path | None) -> None:
+        """Load per-site decision thresholds from a JSON file.
+
+        Expected schema: {"per_site_thresholds": {"<source_id>": <float>, ...}}
+        At inference, when `source_id` matches a key, the loaded threshold is
+        applied to ship_prob instead of the default 0.5. Calibrated on a
+        held-out cal half of eval data; see scripts/calibrate_per_site_honest.py.
+        """
+        if path is None:
+            self._site_thresholds = {}
+            self._site_thresholds_path = None
+            return
+        p = Path(path)
+        if not p.exists():
+            log.warning("site_thresholds_missing", path=str(p))
+            return
+        try:
+            import json as _json
+            data = _json.loads(p.read_text())
+            self._site_thresholds = {
+                str(k): float(v)
+                for k, v in (data.get("per_site_thresholds") or {}).items()
+            }
+            self._site_thresholds_path = str(p)
+            log.info(
+                "site_thresholds_loaded",
+                path=str(p), n_sites=len(self._site_thresholds),
+            )
+        except Exception as e:  # pragma: no cover — defensive
+            log.warning(
+                "site_thresholds_load_failed",
+                path=str(p), error=f"{type(e).__name__}: {e}",
+            )
+            self._site_thresholds = {}
+            self._site_thresholds_path = None
+
+    def _threshold_for(self, source_id: str | None) -> float:
+        """Pick the active decision threshold (default 0.5).
+
+        Tries a few naming conventions to be ergonomic:
+        - Exact match: 'ais-correlated-point-robinson' → that key
+        - 'ais-correlated-' prefix: 'point-robinson' → 'ais-correlated-point-robinson'
+        - SanctSound suffix: 'sanctsound-corrected-oc01' → 'oc01'
+        - Bare hydrophone name (sanctsound deployments): 'oc01' → 'oc01'
+        """
+        if not source_id or not self._site_thresholds:
+            return 0.5
+        # 1. Exact
+        if source_id in self._site_thresholds:
+            return self._site_thresholds[source_id]
+        # 2. ais-correlated- prefix: caller passed 'point-robinson'
+        prefixed = f"ais-correlated-{source_id}"
+        if prefixed in self._site_thresholds:
+            return self._site_thresholds[prefixed]
+        # 3. SanctSound suffix: caller passed 'sanctsound-corrected-oc01'
+        if "-" in source_id:
+            tail = source_id.rsplit("-", 1)[-1]
+            if tail in self._site_thresholds:
+                return self._site_thresholds[tail]
+        return 0.5
+
+    def set_site_adapter(self, adapter_path: str | Path | None) -> None:
+        """Load a per-site SiteAdapter checkpoint to be applied on the
+        embedding before the vessel head. Pass None to clear.
+
+        Designed so failure to load (missing file, mismatched shape) is
+        non-fatal: we log and run un-adapted, matching the threshold-only
+        baseline.
+        """
+        if adapter_path is None:
+            self._site_adapter = None
+            self._site_adapter_path = None
+            return
+        path = Path(adapter_path)
+        if not path.exists():
+            log.warning("site_adapter_missing", path=str(path))
+            return
+        try:
+            from ocean_sentinel.gemma.site_adapter import load_site_adapter
+            self._site_adapter = load_site_adapter(path, self._device)
+            self._site_adapter_path = str(path)
+            log.info("site_adapter_loaded", path=str(path))
+        except Exception as e:  # pragma: no cover — defensive
+            log.warning(
+                "site_adapter_load_failed",
+                path=str(path), error=f"{type(e).__name__}: {e}",
+            )
+            self._site_adapter = None
+            self._site_adapter_path = None
 
     @torch.no_grad()
     def predict(
@@ -90,11 +184,13 @@ class CNNV7Classifier:
     ) -> dict:
         """Run v7 on a single mel spectrogram (128 x T, absolute-dB).
 
-        `source_id` is accepted for parity with v6's interface but ignored —
-        v7 was trained on a more diverse corpus and doesn't rely on per-source
-        profile subtraction.
+        `source_id` selects a per-site decision threshold if one is loaded
+        via `set_site_thresholds`. Falls back to 0.5 (= argmax) when no
+        match. Calibrated thresholds correct for class-skewed sites where
+        balanced-sampler training under-weights the dominant ambient class
+        (e.g. mbari at 1/34 instead of 67%).
         """
-        del source_id  # parity with v6 interface
+        active_threshold = self._threshold_for(source_id)
 
         spec = np.asarray(spectrogram, dtype=np.float32)
         if spec.ndim != 2 or spec.shape[0] != _MEL_N:
@@ -117,12 +213,39 @@ class CNNV7Classifier:
         spec = (spec - spec.mean()) / (spec.std() + 1e-8)
         x = torch.from_numpy(spec).unsqueeze(0).unsqueeze(0).float().to(self._device)
 
-        out = self._model(x)
-        evidence = out["evidence"][0]                       # (2,)
+        # Forward path. When a per-site adapter is set, we run the
+        # backbone+transformer ourselves so we can splice it in between
+        # the embedding and the vessel head, then re-use the model's
+        # auxiliary heads on the original embedding.
+        if self._site_adapter is None:
+            out = self._model(x)
+            evidence = out["evidence"][0]
+            embedding_for_output = out["embedding"][0]
+        else:
+            feats = self._model.backbone(x)
+            feats = feats.mean(dim=2).transpose(1, 2)
+            feats = self._model.temporal(feats)
+            base_embedding = feats.mean(dim=1)               # (1, 256)
+            adapted = self._site_adapter(base_embedding)     # (1, 256)
+            evidence_t = self._model.vessel_head(adapted)[0]
+            vessel_type_logits_t = self._model.type_head(base_embedding)
+            distance_logits_t = self._model.distance_head(base_embedding)
+            out = {
+                "evidence": evidence_t.unsqueeze(0),
+                "vessel_type": vessel_type_logits_t,
+                "distance": distance_logits_t,
+                "embedding": adapted,
+            }
+            evidence = evidence_t
+            embedding_for_output = adapted[0]
+
         alpha = F.softplus(evidence) + 1.0
         S = alpha.sum()
         probs = alpha / S
-        pred_idx = int(probs.argmax().item())
+        # Apply per-site threshold to ship_prob (index 1 = "ship"). When
+        # active_threshold is 0.5 this matches the original argmax behaviour.
+        ship_prob = float(probs[1].item())
+        pred_idx = 1 if ship_prob > active_threshold else 0
 
         # Total evidence beyond uniform prior; high → confident, low → uncertain.
         total_evidence = float((alpha.sum() - 2).item())

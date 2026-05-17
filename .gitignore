@@ -28,8 +28,10 @@ downloads-photos/
 CHAT
 CHAT/
 
-# Data (too large for git)
-/data/
+# Data (too large for git) — excludes immediate children of /data/ so that
+# specific subpaths can be re-included via ! rules below (git won't
+# re-include children of a fully-excluded parent).
+/data/*
 *.mp4
 *.wav
 *.zip
@@ -39,6 +41,17 @@ CHAT/
 /ais_spectrograms.zip
 /maciej_new_rows.jsonl
 
+# Bundled test samples ARE shipped with the package — override the *.wav rule.
+!src/ocean_sentinel/test_samples/**/*.wav
+
+# Per-site yaml configs are tiny (~30 lines each) and other testers need
+# them to run `os detect --site X` without first running the full
+# onboarding flow. Re-include the dir + yamls only — keep adapter.pt,
+# events.jsonl, .sessions/, etc. excluded.
+!/data/sites
+/data/sites/*
+!/data/sites/*.yaml
+
 # Local MCP config (absolute paths, personal)
 .mcp.json
 
@@ -47,3 +60,8 @@ CHAT/
 .vscode/
 .idea/
 .claude/
+
+# Phase 3 OC01 audit — raw MarineCadastre AIS archive (~1.3GB, downloadable)
+data/audit/marine_cadastre/*.zip
+data/audit/marine_cadastre/*.csv
+data/audit/.DS_Store

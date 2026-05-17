@@ -33,9 +33,12 @@ log = structlog.get_logger()
 
 # Default eval pool: every labelled JSONL we have (training & holdout).
 # Per-site breakdown means trained sites still serve as sanity checks.
+# sanctsound_more_60s.jsonl adds 7 SanctSound stations not in v7.4's training
+# (hi04, hi06, oc02, ci01, ci02, mb02, sb03, …) — actual held-out OOD eval.
 DEFAULT_FILES = [
     "data/training/sanctsound_corrected.jsonl",
     "data/training/sanctsound_diverse.jsonl",
+    "data/training/sanctsound_more_60s.jsonl",
     "data/training/gemma_labels.v7.jsonl",
 ]
 
@@ -65,7 +68,8 @@ def evaluate_one(clf, rows: list[dict]) -> dict:
             continue
         try:
             spec = np.load(spec_path)
-            v = clf.predict(spec)
+            src = (r.get("provenance") or {}).get("source_id")
+            v = clf.predict(spec, source_id=src)
         except Exception:
             continue
         total += 1

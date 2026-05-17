@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     correlation_radius_km: float = 50.0
     correlation_time_window_hours: int = 6
 
-    cnn_checkpoint_path: str = "data/models/cnn_v7_1.pt"
+    cnn_checkpoint_path: str = "data/models/cnn_v7_6.pt"
 
     database_url: str = "sqlite+aiosqlite:///data/ocean_sentinel.db"
 
@@ -43,3 +43,11 @@ class Settings(BaseSettings):
 
     supabase_url: str | None = None
     supabase_service_role_key: str | None = None
+
+    # Public ingest gateway for vessel events. End-user installs use this
+    # default to push detections to the project's central dashboard
+    # WITHOUT carrying a service-role secret. Self-hosters can point at
+    # their own Edge Function via OS_INGEST_URL.
+    ingest_url: str = (
+        "https://sshfjjihgzzmxjqxphpg.supabase.co/functions/v1/ingest-event"
+    )

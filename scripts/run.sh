@@ -1,6 +1,7 @@
 #!/bin/bash
-# Ocean Sentinel — one-command starter.
-# Starts Ollama (if not running), API, dashboard, opens browser.
+# Ocean Sentinel — backend starter (API + Ollama).
+# Frontend lives in a separate repo (~/oceansentinelfrontend, Next.js).
+# Run it there with `pnpm dev` — it will hit this API on :8000.
 #
 # Usage:
 #   bash scripts/run.sh                        # just start everything
@@ -37,8 +38,6 @@ echo "• Starting API on http://localhost:8000 ..."
 "$VENV_PY" -m uvicorn ocean_sentinel.api.app:app \
     --host 0.0.0.0 --port 8000 \
     --reload \
-    --reload-exclude 'dashboard/*' \
-    --reload-exclude 'dashboard-react/*' \
     --reload-exclude 'data/*' \
     --app-dir src > /tmp/os-api.log 2>&1 &
 API_PID=$!
@@ -51,24 +50,16 @@ for i in $(seq 1 30); do
     sleep 1
 done
 
-# --- 3. Dashboard --------------------------------------------------------
-echo "• Starting dashboard on http://localhost:5173 ..."
-(cd dashboard && node_modules/.bin/vite --host > /tmp/os-dashboard.log 2>&1) &
-DASH_PID=$!
-
-# Give vite a moment to bind, then open browser
-sleep 3
-echo "• Opening browser..."
-if command -v open > /dev/null 2>&1; then
-    open "http://localhost:5173"
-fi
+# --- 3. Frontend ---------------------------------------------------------
+# Frontend is a separate Next.js repo at ~/oceansentinelfrontend.
+# Start it manually:  cd ~/oceansentinelfrontend && pnpm dev
 
 echo ""
 echo "════════════════════════════════════════════════"
-echo "  Ocean Sentinel is running"
-echo "  Dashboard: http://localhost:5173"
+echo "  Ocean Sentinel backend is running"
 echo "  API docs:  http://localhost:8000/docs"
-echo "  Logs:      tail -f /tmp/os-api.log  /tmp/os-dashboard.log"
+echo "  Frontend:  cd ~/oceansentinelfrontend && pnpm dev → :3000"
+echo "  Logs:      tail -f /tmp/os-api.log"
 echo "════════════════════════════════════════════════"
 echo ""
 echo "Press Ctrl+C to stop everything."
@@ -87,7 +78,7 @@ fi
 cleanup() {
     echo ""
     echo "• Stopping services..."
-    kill $API_PID $DASH_PID 2>/dev/null || true
+    kill $API_PID 2>/dev/null || true
     if [ -n "$OLLAMA_PID" ]; then
         kill $OLLAMA_PID 2>/dev/null || true
     fi

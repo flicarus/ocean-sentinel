@@ -62,11 +62,27 @@ log = structlog.get_logger()
 
 # Tier-mapping thresholds. Top-level so they're readable in the audit log
 # under thresholds_used and easy to bump in one place.
-# Ship-signature gate strength required for the strong-ship branch.
-# 0.66 (≥ 2/3 of three gates) instead of 0.67 because 2/3 ≈ 0.66666 — the
-# round-up boundary value would otherwise reject exact 2/3 from float
-# precision. Pragmatic boundary fix.
-SHIP_SIGNATURE_STRONG = 0.66
+# Ship-signature gate strength required to commit to a CONFIRMED/DARK
+# vessel call. Tightened from 0.66 (2/3 gates) → 1.0 (all 3 gates) after
+# end-to-end eval showed 2/3 was effectively pass-through — most ambient
+# false positives still cleared the bar. Requiring all three (tonal +
+# model_consistency + low_uncertainty) demotes hedging predictions to
+# ACOUSTIC_ONLY_LOW rather than letting them through as DARK_VESSEL.
+SHIP_SIGNATURE_STRONG = 1.0
+# Floor for the LOW tier — below this strength even ACOUSTIC_ONLY_LOW
+# becomes UNCERTAIN. Reason: when fewer than 2/3 ship-signature gates
+# pass, the acoustic case for a vessel is too thin to alert at all
+# (these were the false_alarm_weak rows in the eval).
+SHIP_SIGNATURE_LOW_FLOOR = 0.5
+# Below this windowed confidence, every call goes UNCERTAIN regardless of
+# label. Catches the "model hedged but had to vote" cases that the
+# evidential uncertainty alone misses.
+COMMITMENT_CONFIDENCE_FLOOR = 0.65
+# When the model votes not_ship but mean uncertainty is high, the more
+# likely interpretation is "hard sample, model abstained by voting the
+# prior" — escalate to UNCERTAIN. Catches misses (FN) that AMBIENT would
+# silently swallow.
+NOT_SHIP_UNCERTAINTY_MAX = 0.20
 # Conformal lower bound is recorded in the audit log but does NOT gate
 # decisions on its own. Reason: after v7.1 calibration the threshold sits
 # around 0.66, so the maximum mathematically possible lower_bound is
@@ -202,6 +218,16 @@ class DecisionEngine:
                 + ". Input cannot be trusted; flagged for review."
             )
 
+        elif windowed.confidence < COMMITMENT_CONFIDENCE_FLOOR:
+            tier_label = "UNCERTAIN"
+            threat = ThreatLevel.MEDIUM
+            requires_review = True
+            reasoning = (
+                f"Windowed confidence {windowed.confidence:.2f} below "
+                f"commitment floor {COMMITMENT_CONFIDENCE_FLOOR:.2f}. "
+                f"Model is hedging — flagged for review."
+            )
+
         elif windowed.single_window_anomaly:
             tier_label = "UNCERTAIN"
             threat = ThreatLevel.MEDIUM
@@ -258,7 +284,7 @@ class DecisionEngine:
                         f"with NO AIS contact within {self._ais_radius_km:.0f} km. "
                         f"Possible transponder-off vessel."
                     )
-            else:
+            elif strength >= SHIP_SIGNATURE_LOW_FLOOR:
                 tier_label = "ACOUSTIC_ONLY_LOW"
                 threat = ThreatLevel.LOW
                 requires_review = False
@@ -268,15 +294,37 @@ class DecisionEngine:
                     f"{gates_report.ship_signature_total} gates pass). "
                     f"Likely distant or partial passage; not escalated."
                 )
+            else:
+                tier_label = "UNCERTAIN"
+                threat = ThreatLevel.MEDIUM
+                requires_review = True
+                reasoning = (
+                    f"Model voted ship but acoustic signature too weak "
+                    f"({gates_report.ship_signature_passed}/"
+                    f"{gates_report.ship_signature_total} gates) — flagged "
+                    f"for review rather than alerted."
+                )
 
         else:  # windowed.label == "not_ship"
-            tier_label = "AMBIENT"
-            threat = ThreatLevel.NONE
-            requires_review = False
-            reasoning = (
-                f"Quiet window: {windowed.ship_fraction:.0%} ship votes "
-                f"across {windowed.n_windows} sliding windows."
-            )
+            if windowed.mean_uncertainty > NOT_SHIP_UNCERTAINTY_MAX:
+                tier_label = "UNCERTAIN"
+                threat = ThreatLevel.MEDIUM
+                requires_review = True
+                reasoning = (
+                    f"Model voted not_ship but mean uncertainty "
+                    f"{windowed.mean_uncertainty:.2f} above "
+                    f"{NOT_SHIP_UNCERTAINTY_MAX:.2f}. Likely a hard sample, "
+                    f"flagged for review rather than dismissed as quiet."
+                )
+            else:
+                tier_label = "AMBIENT"
+                threat = ThreatLevel.NONE
+                requires_review = False
+                reasoning = (
+                    f"Quiet window: {windowed.ship_fraction:.0%} ship votes "
+                    f"across {windowed.n_windows} sliding windows, mean "
+                    f"uncertainty {windowed.mean_uncertainty:.2f}."
+                )
 
         # Headline confidence: conformal lower bound when calibrated,
         # otherwise the raw windowed confidence. We log both in evidence
@@ -415,6 +463,8 @@ class DecisionEngine:
             },
             thresholds_used={
                 "ship_signature_strong": SHIP_SIGNATURE_STRONG,
+                "commitment_confidence_floor": COMMITMENT_CONFIDENCE_FLOOR,
+                "not_ship_uncertainty_max": NOT_SHIP_UNCERTAINTY_MAX,
                 "ais_radius_km": self._ais_radius_km,
                 "ais_time_window_hours": self._ais_time_window_hours,
             },

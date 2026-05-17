@@ -111,8 +111,12 @@ SPECTRAL_FLATNESS_MAX = 0.4       # below = tonal (vessel); above = broadband
 MODEL_SHIP_FRACTION_MIN = 0.55    # majority of windows agree on ship
 # v7's evidential head was collapsed (~0.05 uncertainty for everything).
 # v7.1 shows real spread: in-dist confident ≈ 0.18-0.20, OOD/hard ≈ 0.25-0.30.
-# Threshold 0.22 separates "model committed" from "model hedging".
-MEAN_UNCERTAINTY_MAX = 0.22
+# Tightened from 0.22 → 0.20 after end-to-end eval. 0.18 was too tight
+# (everything failed including in-dist confident predictions, blocking
+# the CONFIRMED_VESSEL path entirely). 0.20 sits at the in-dist mean —
+# OOD/hedging predictions still fail and demote to LOW, while in-dist
+# confident calls pass through to the strong-ship branch.
+MEAN_UNCERTAINTY_MAX = 0.20
 # OrcasoundAdapter currently fetches a single 10s HLS segment per call
 # despite the 60s claim, so most decisions land on n_windows=1. Single-
 # window inference is the realistic floor until the adapter concatenates

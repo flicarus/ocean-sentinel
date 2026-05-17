@@ -1,0 +1,50 @@
+# Bundled test samples for `os test`.
+#
+# Each sample below has a known label so the test command can verify
+# the calibrated pipeline produces a sensible decision on real audio.
+#
+# IMPORTANT — held-out integrity:
+# All vessel clips below are confirmed UNSEEN by the trained CNN v7.4.
+# Their (class, clip_id) tuples do NOT appear in any training JSONL
+# under data/training/. This makes `os test` a real generalisation
+# probe rather than a memorisation check.
+# Verified by scripts/evaluate_unseen.py.
+#
+# Vessel clips are trimmed from DeepShip (https://www.kaggle.com/datasets/
+# pranabkumarbose/deepship-data), used here under research / fair use
+# for product validation. Ambient clips are synthesised deterministically
+# so labels are guaranteed correct.
+
+samples:
+  - path: vessel_cargo.wav
+    expected_label: ship
+    duration_s: 30
+    source: DeepShip Cargo clip 38.wav, 30 s window from offset 30 s
+    held_out: true
+    notes: cargo-class signature, broadband below 1 kHz, never in training
+
+  - path: vessel_passenger.wav
+    expected_label: ship
+    duration_s: 30
+    source: DeepShip Passengership clip 4.wav, 30 s window from offset 30 s
+    held_out: true
+    notes: passenger-vessel signature, never in training
+
+  - path: vessel_tanker.wav
+    expected_label: ship
+    duration_s: 30
+    source: DeepShip Tanker clip 5.wav, 30 s window from offset 5 s
+    held_out: true
+    notes: tanker-class signature, never in training
+
+  - path: ambient_quiet.wav
+    expected_label: not_ship
+    duration_s: 30
+    source: synthetic broadband ambient (deterministic seed=101)
+    notes: pink-tilt noise, no vessel signature, no transients
+
+  - path: ambient_busy.wav
+    expected_label: not_ship
+    duration_s: 30
+    source: synthetic textured ambient (deterministic seed=202)
+    notes: broadband + sparse rain-tick transients, no vessel signature
