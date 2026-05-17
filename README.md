@@ -150,7 +150,7 @@ The CLI ships detections to a **public Supabase Edge Function** (`ingest-event`)
 
 End-user installs **do not carry a service-role key**. The Edge Function does the privileged work server-side, so a leaked CLI install can never write directly to the table.
 
-- Frontend repo: separate Next.js 16 / React 19 / Leaflet app at `~/oceansentinelfrontend`
+- Frontend repo: separate Next.js 16 / React 19
 - Live URL: see [sofar-ai.com](https://sofar-ai.com)
 - Self-host: point `OS_INGEST_URL` at your own Edge Function
 
@@ -201,11 +201,11 @@ End-user installs **do not carry a service-role key**. The Edge Function does th
 
   ┌────────────────────────────────────────────────────────────────────┐
   │  Gemma 4 (function-calling agent, runs locally via Ollama)         │
-  │  ───────────────────────────────────────────────────────────────  │
-  │  Composes the analyst paragraph from CNN output + AIS proximity   │
-  │  + MPA distance + ocean conditions + acoustic memory matches.     │
-  │  Called by `os brief`, `os monitor` narration, `os onboard`,      │
-  │  and the event-detail panel in the dashboard.                     │
+  │  ───────────────────────────────────────────────────────────────   │
+  │  Composes the analyst paragraph from CNN output + AIS proximity    │
+  │  + MPA distance + ocean conditions + acoustic memory matches.      │
+  │  Called by `os brief`, `os monitor` narration, `os onboard`,       │
+  │  and the event-detail panel in the dashboard.                      │
   └────────────────────────────────────────────────────────────────────┘
 ```
 
