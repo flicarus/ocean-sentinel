@@ -28,13 +28,13 @@ Underwater microphones (hydrophones) don't go blind. A 30 m trawler is loud whet
                                                                 ▼
                                               ┌──────────────────────────────┐
                                               │  vessel_events  (Supabase)   │
-                                              │  ───────────────────────────│
-                                              │  realtime dashboard pin       │
-                                              │  + audit-log row              │
+                                              │  ─────────────────────────── │
+                                              │  realtime dashboard pin      │
+                                              │  + audit-log row             │
                                               └──────────────────────────────┘
 ```
 
-Three-layer pipeline, designed to run **offline on a Raspberry Pi** with the cloud as an optional dashboard:
+Three-layer pipeline:
 
 | Layer | What | Footprint |
 |---|---|---|
@@ -201,11 +201,11 @@ End-user installs **do not carry a service-role key**. The Edge Function does th
 
   ┌────────────────────────────────────────────────────────────────────┐
   │  Gemma 4 (function-calling agent, runs locally via Ollama)         │
-  │  ───────────────────────────────────────────────────────────────  │
-  │  Composes the analyst paragraph from CNN output + AIS proximity   │
-  │  + MPA distance + ocean conditions + acoustic memory matches.     │
-  │  Called by `os brief`, `os monitor` narration, `os onboard`,      │
-  │  and the event-detail panel in the dashboard.                     │
+  │  ───────────────────────────────────────────────────────────────   │
+  │  Composes the analyst paragraph from CNN output + AIS proximity    │
+  │  + MPA distance + ocean conditions + acoustic memory matches.      │
+  │  Called by `os brief`, `os monitor` narration, `os onboard`,       │
+  │  and the event-detail panel in the dashboard.                      │
   └────────────────────────────────────────────────────────────────────┘
 ```
 
