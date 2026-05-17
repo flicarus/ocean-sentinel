@@ -15,6 +15,12 @@ from pathlib import Path
 import httpx
 import typer
 
+from ..logging import configure_logging
+
+# Apply OS_LOG_LEVEL env var (default: show everything) before any
+# submodule's `structlog.get_logger()` gets cached at level 0.
+configure_logging()
+
 from ..gemma.agent import (
     DEFAULT_HOST,
     DEFAULT_MODEL,

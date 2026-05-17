@@ -220,7 +220,7 @@ def detect_command(
         print(json.dumps(out))
         return
 
-    colour = _TIER_COLOUR.get(tier, "white")
+    colour = _TIER_COLOUR.get(tier, "default")
     console.rule("[bold]Ocean Sentinel · detection")
     console.print(f"  file       : [bold]{path.name}[/bold]  ({duration:.1f}s)")
     if site:

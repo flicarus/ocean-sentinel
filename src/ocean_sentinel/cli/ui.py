@@ -67,7 +67,7 @@ def show_banner() -> None:
 
     # Tagline
     tagline = Text()
-    tagline.append("Ocean Sentinel", style="bold white")
+    tagline.append("Ocean Sentinel", style="bold default")
     tagline.append("  ·  ", style=GHOST)
     tagline.append("acoustic dark-vessel detection", style=SOFT)
     tagline.append("  ·  ", style=GHOST)
@@ -87,7 +87,7 @@ def step_header(n: int, total: int, title: str, subtitle: str = "") -> None:
     line = Text()
     line.append(dots)
     line.append(f"  Step {n} of {total}   ", style=DIM)
-    line.append(title, style="bold white")
+    line.append(title, style="bold default")
     if subtitle:
         line.append(f"  ·  ", style=GHOST)
         line.append(subtitle, style=DIM)
@@ -110,7 +110,7 @@ def gemma_say(text: str, *, thinking_ms: int = 500) -> None:
             time.sleep(thinking_ms / 1000)
 
     label = Text("Gemma", style=f"bold {TEAL}")
-    bubble = Text(text, style="white")
+    bubble = Text(text, style="default")
 
     body = Group(
         label,
@@ -133,7 +133,7 @@ def ask(question: str, hint: str = "", *, default: str | None = None) -> str:
     """Two-line prompt:  question (white)  / hint (dim)  / `>` cursor."""
     q = Text()
     q.append("  ▸ ", style=f"bold {GREEN}")
-    q.append(question, style="white")
+    q.append(question, style="default")
     console.print(q)
     if hint:
         console.print(Text(f"    {hint}", style=DIM))
@@ -201,7 +201,7 @@ def tool_call_static(name: str, args: dict[str, Any] | None = None) -> None:
 def ok(text: str) -> None:
     line = Text()
     line.append("    ✓  ", style=GREEN)
-    line.append(text, style="white")
+    line.append(text, style="default")
     console.print(line)
     console.print()
 
@@ -209,7 +209,7 @@ def ok(text: str) -> None:
 def fail(text: str) -> None:
     line = Text()
     line.append("    ✗  ", style=RED)
-    line.append(text, style="white")
+    line.append(text, style="default")
     console.print(line)
     console.print()
 
@@ -219,7 +219,7 @@ def table(rows: list[tuple[str, str]], title: str = "") -> None:
     """Inline labeled table card. Use after a tool_call for structured results."""
     t = Table(show_header=False, box=None, padding=(0, 2))
     t.add_column(style=DIM, no_wrap=True, width=18)
-    t.add_column(style="white")
+    t.add_column(style="default")
     for k, v in rows:
         t.add_row(k, v)
 
@@ -240,12 +240,12 @@ def site_registered(site_id: str, config: dict[str, str]) -> None:
     """Big completion card with site config table inside."""
     headline = Text()
     headline.append("✓  ", style=f"bold {GREEN}")
-    headline.append("Site registered: ", style="white")
+    headline.append("Site registered: ", style="default")
     headline.append(site_id, style=f"bold {TEAL}")
 
     cfg = Table(show_header=False, box=None, padding=(0, 2))
     cfg.add_column(style=DIM, no_wrap=True, width=14)
-    cfg.add_column(style="white")
+    cfg.add_column(style="default")
     for k, v in config.items():
         cfg.add_row(k, v)
 
@@ -276,12 +276,12 @@ def site_registered(site_id: str, config: dict[str, str]) -> None:
 def warn(msg: str) -> None:
     line = Text()
     line.append("  ⚠  ", style=AMBER)
-    line.append(msg, style="white")
+    line.append(msg, style="default")
     console.print(line)
 
 
 def error(msg: str) -> None:
     line = Text()
     line.append("  ✗  ", style=f"bold {RED}")
-    line.append(msg, style="white")
+    line.append(msg, style="default")
     console.print(line)

@@ -36,7 +36,7 @@ def _header(console) -> None:
     from .ui import GHOST
 
     line = Text()
-    line.append("Ocean Sentinel", style="bold white")
+    line.append("Ocean Sentinel", style="bold default")
     line.append("  ·  ", style=GHOST)
     line.append("health check", style="grey70")
 
@@ -61,7 +61,7 @@ def _check(console, status: str, label: str, detail: str, hint: str = "") -> Non
 
     row = Text()
     row.append(f"    {icon}  ", style=style)
-    row.append(label.ljust(_LABEL_WIDTH), style="white")
+    row.append(label.ljust(_LABEL_WIDTH), style="default")
     row.append(detail, style=SOFT)
     console.print(row)
 
@@ -78,19 +78,19 @@ def _summary(console, fails: int, warns: int) -> None:
     if fails == 0 and warns == 0:
         headline = Text()
         headline.append("✓  ", style=f"bold {GREEN}")
-        headline.append("All checks passed.  ", style="white")
+        headline.append("All checks passed.  ", style="default")
         headline.append("System is healthy.", style=DIM)
         border, box = TEAL, HEAVY
     elif fails == 0:
         headline = Text()
         headline.append("⚠  ", style=f"bold {AMBER}")
-        headline.append(f"{warns} warning(s).  ", style="white")
+        headline.append(f"{warns} warning(s).  ", style="default")
         headline.append("System will run but missing optional pieces.", style=DIM)
         border, box = AMBER, ROUNDED
     else:
         headline = Text()
         headline.append("✗  ", style=f"bold {RED}")
-        headline.append(f"{fails} failure(s), {warns} warning(s).  ", style="white")
+        headline.append(f"{fails} failure(s), {warns} warning(s).  ", style="default")
         headline.append("Fix the FAILs before deploying.", style=DIM)
         border, box = RED, HEAVY
 

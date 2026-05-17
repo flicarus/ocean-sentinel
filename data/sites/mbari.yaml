@@ -1,0 +1,31 @@
+site_id: mbari
+display_name: MBARI MARS
+operator: Monterey Bay Aquarium Research Institute
+
+# MARS hydrophone — real coordinates of the cabled observatory off
+# Smooth Ridge in Monterey Bay. The dashboard reads lat/lon from this
+# file to anchor the marker on the map; the previous run had no
+# `data/sites/mbari.yaml` so every `--site mbari` push wrote (0,0)
+# and the frontend silently dropped the event.
+lat: 36.7128
+lon: -122.1870
+depth_m: 891
+
+nearest_mpa: Monterey Bay National Marine Sanctuary
+mpa_distance_km: 0.0
+
+ais_traffic_class: high
+ais_avg_vessels_per_day: 47
+ais_shipping_lane_km: 5.0
+
+ambient_source: data/mbari/sample_60s.wav
+ambient_class: "infrasound · deep-water"
+dominant_band_hz: "20-115 Hz"
+
+# Adapter + threshold are populated by `os onboard`; this yaml just
+# provides the static identity / location the dashboard needs.
+adapter_strategy: per-site-residual
+adapter_epochs: 10
+adapter_lr: 0.001
+adapter_checkpoint: data/sites/mbari/adapter.pt
+conformal_threshold_p: 0.88
