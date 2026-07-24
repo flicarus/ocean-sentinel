@@ -65,6 +65,22 @@ The held-out test number (96.4 %) and the fresh-date OOD number (96.0 %) agree w
 
 ---
 
+## The model was right, the label was wrong
+
+While building the calibration layer, the CNN kept disagreeing with "ambient" ground-truth labels at a high-traffic NOAA SanctSound site (OC01). Rather than trust the anomaly, we audited it three ways:
+
+1. **Model self-audit** — invalid by construction: the model had been trained on the labels it was auditing (circular).
+2. **Pure acoustic analysis (PSD)** — found a vessel signature at 28–37 Hz (blade-rate harmonics), but cross-recording calibration drift made it inconclusive on its own.
+3. **MarineCadastre.gov** — NOAA's own government AIS archive. Decisive: a cargo vessel (JOSCO HUIZHOU) confirmed at 6.81 km from the hydrophone, timestamped to the second (2019-03-09T12:39:55Z), inside the "ambient"-labelled window.
+
+Grad-CAM showed the CNN attends to a completely different acoustic band (cavitation, 500–1000 Hz) than the PSD method (blade-rate, 28–37 Hz) — two independent signal pathways converging on the same vessel at the same timestamp, confirmed by a third (AIS position data).
+
+Extending the audit to the full 800-chunk corpus surfaced something more useful than a list of corrections: at high-AIS-traffic sites, *every* chunk has a vessel within 10 km — "ambient" is a labeling convention, not an acoustic ground truth. We shared this with the NOAA SanctSound team as a methodology note rather than a corrections list.
+
+**Full story:** [Case study, Part I](https://www.sofar-ai.com/case-study) · [Part II: the audit](https://www.sofar-ai.com/case-study/audit) · in-repo: [`docs/findings_per_site_calibration.md`](docs/findings_per_site_calibration.md)
+
+---
+
 ## Quick start
 
 ### 1. Install
